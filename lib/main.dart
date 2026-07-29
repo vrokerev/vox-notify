@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -35,24 +37,37 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   static const _channel = MethodChannel('yape_notifier/native');
+  static const _events = EventChannel('voxnotify/events');
   bool _notificationAccess = false;
   bool _voiceEnabled = true;
   bool _fullPhrase = true;
+  bool _continuousBackground = false;
+  bool _batteryOptimizationIgnored = false;
   bool _loading = true;
   String? _debugResult;
   Map<String, String> _diagnostics = {};
   List<PaymentRecord> _history = [];
   List<ReadableApp> _apps = [];
+  StreamSubscription<dynamic>? _eventSubscription;
+  Timer? _refreshDebounce;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _eventSubscription = _events.receiveBroadcastStream().listen((_) {
+      _refreshDebounce?.cancel();
+      _refreshDebounce = Timer(const Duration(milliseconds: 350), () {
+        if (mounted) _refresh(silent: true);
+      });
+    });
     _refresh();
   }
 
   @override
   void dispose() {
+    _refreshDebounce?.cancel();
+    _eventSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -65,8 +80,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _refresh() async {
-    setState(() => _loading = true);
+  Future<void> _refresh({bool silent = false}) async {
+    if (!silent) setState(() => _loading = true);
     final access =
         await _channel.invokeMethod<bool>('isNotificationAccessEnabled') ??
         false;
@@ -76,11 +91,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final history = await _loadHistory();
     final apps = await _loadApps();
     final diagnostics = await _loadDiagnostics();
+    final batteryIgnored =
+        await _channel.invokeMethod<bool>('getBatteryOptimizationIgnored') ??
+        false;
     if (!mounted) return;
     setState(() {
       _notificationAccess = access;
       _voiceEnabled = settings['voiceEnabled'] as bool? ?? true;
       _fullPhrase = settings['fullPhrase'] as bool? ?? true;
+      _continuousBackground =
+          settings['continuousBackground'] as bool? ?? false;
+      _batteryOptimizationIgnored = batteryIgnored;
       _history = history;
       _apps = apps;
       _diagnostics = diagnostics;
@@ -122,6 +143,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await _channel.invokeMethod<Map<dynamic, dynamic>>('updateSettings', {
             'voiceEnabled': voiceEnabled ?? _voiceEnabled,
             'fullPhrase': fullPhrase ?? _fullPhrase,
+            'continuousBackground': _continuousBackground,
           }) ??
           {},
     );
@@ -129,7 +151,58 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() {
       _voiceEnabled = updated['voiceEnabled'] as bool? ?? _voiceEnabled;
       _fullPhrase = updated['fullPhrase'] as bool? ?? _fullPhrase;
+      _continuousBackground =
+          updated['continuousBackground'] as bool? ?? _continuousBackground;
     });
+  }
+
+  Future<void> _setContinuousBackground(bool enabled) async {
+    if (enabled) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Lectura continua'),
+          content: const Text(
+            'VoxNotify mostrará una notificación persistente para mejorar la lectura en segundo plano.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Activar'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+    final updated = Map<String, Object?>.from(
+      await _channel.invokeMethod<Map<dynamic, dynamic>>(
+            enabled ? 'startContinuousBackground' : 'stopContinuousBackground',
+          ) ??
+          {},
+    );
+    if (!mounted) return;
+    setState(() {
+      _continuousBackground =
+          updated['continuousBackground'] as bool? ?? enabled;
+    });
+    await _refresh(silent: true);
+  }
+
+  Future<void> _openAppDetails() async {
+    await _channel.invokeMethod<void>('openAppDetailsSettings');
+  }
+
+  Future<void> _openBatterySettings() async {
+    await _channel.invokeMethod<void>('openBatterySettings');
+  }
+
+  Future<void> _openBatteryOptimizationSettings() async {
+    await _channel.invokeMethod<void>('openBatteryOptimizationSettings');
   }
 
   Future<void> _openSettings() async {
@@ -207,7 +280,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             _StatusPanel(
               access: _notificationAccess,
               loading: _loading,
+              diagnostics: _diagnostics,
+              voiceEnabled: _voiceEnabled,
+              continuousBackground: _continuousBackground,
+              batteryOptimizationIgnored: _batteryOptimizationIgnored,
               onOpenSettings: _openSettings,
+              onContinuousChanged: _setContinuousBackground,
+              onOpenAppDetails: _openAppDetails,
+              onOpenBatterySettings: _openBatterySettings,
+              onOpenBatteryOptimizationSettings:
+                  _openBatteryOptimizationSettings,
             ),
             const SizedBox(height: 12),
             _SettingsPanel(
@@ -283,12 +365,23 @@ class _AppsPanel extends StatelessWidget {
             ],
             if (detected.isNotEmpty) ...[
               _AppSectionTitle('Aplicaciones detectadas'),
+              const Text(
+                'Apps que ya enviaron al menos una notificación desde que VoxNotify obtuvo acceso.',
+              ),
               ...detected.map(
                 (app) => _AppTile(app: app, onChanged: onChanged),
+              ),
+            ] else ...[
+              _AppSectionTitle('Aplicaciones detectadas'),
+              const Text(
+                'Aún no se detectaron otras aplicaciones. Cuando una app envíe una notificación, aparecerá aquí automáticamente.',
               ),
             ],
             if (visible.isNotEmpty) ...[
               _AppSectionTitle('Aplicaciones visibles'),
+              const Text(
+                'Apps instaladas que Android permite mostrar, aunque todavía no hayan enviado una notificación.',
+              ),
               ...visible.map((app) => _AppTile(app: app, onChanged: onChanged)),
             ],
           ],
@@ -364,16 +457,38 @@ class _StatusPanel extends StatelessWidget {
   const _StatusPanel({
     required this.access,
     required this.loading,
+    required this.diagnostics,
+    required this.voiceEnabled,
+    required this.continuousBackground,
+    required this.batteryOptimizationIgnored,
     required this.onOpenSettings,
+    required this.onContinuousChanged,
+    required this.onOpenAppDetails,
+    required this.onOpenBatterySettings,
+    required this.onOpenBatteryOptimizationSettings,
   });
 
   final bool access;
   final bool loading;
+  final Map<String, String> diagnostics;
+  final bool voiceEnabled;
+  final bool continuousBackground;
+  final bool batteryOptimizationIgnored;
   final VoidCallback onOpenSettings;
+  final ValueChanged<bool> onContinuousChanged;
+  final VoidCallback onOpenAppDetails;
+  final VoidCallback onOpenBatterySettings;
+  final VoidCallback onOpenBatteryOptimizationSettings;
 
   @override
   Widget build(BuildContext context) {
     final color = access ? Colors.green.shade700 : Colors.red.shade700;
+    final listenerConnected = diagnostics['listenerConnected'] == 'true';
+    final manufacturer = diagnostics['manufacturer']?.toLowerCase() ?? '';
+    final isXiaomi =
+        manufacturer.contains('xiaomi') ||
+        manufacturer.contains('redmi') ||
+        manufacturer.contains('poco');
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -389,15 +504,63 @@ class _StatusPanel extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    loading
-                        ? 'Comprobando acceso...'
-                        : access
-                        ? 'Acceso habilitado'
-                        : 'Acceso pendiente',
+                    'Estado de VoxNotify',
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 12),
+            _StatusLine(
+              label: 'Acceso a notificaciones',
+              value: loading
+                  ? 'Comprobando...'
+                  : access
+                  ? 'Habilitado'
+                  : 'No habilitado',
+            ),
+            _StatusLine(
+              label: 'Listener',
+              value: listenerConnected ? 'Conectado' : 'Desconectado',
+            ),
+            _StatusLine(
+              label: 'Lectura en segundo plano',
+              value: continuousBackground ? 'Activa' : 'Inactiva',
+            ),
+            _StatusLine(
+              label: 'Voz',
+              value: voiceEnabled ? 'Activa' : 'Inactiva',
+            ),
+            _StatusLine(
+              label: 'Batería',
+              value: batteryOptimizationIgnored
+                  ? 'Sin restricciones'
+                  : 'Optimizada',
+            ),
+            _StatusLine(
+              label: 'Último evento',
+              value: diagnostics['lastCallbackAt']?.isNotEmpty == true
+                  ? diagnostics['lastCallbackAt']!
+                  : 'Sin eventos',
+            ),
+            _StatusLine(
+              label: 'Última frase',
+              value: diagnostics['lastSpokenText']?.isNotEmpty == true
+                  ? diagnostics['lastSpokenText']!
+                  : 'Sin frases',
+            ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: continuousBackground,
+              onChanged: onContinuousChanged,
+              title: const Text('Lectura continua en segundo plano'),
+              subtitle: Text(
+                continuousBackground
+                    ? 'Notificación persistente activa.'
+                    : 'La fiabilidad puede disminuir en algunos fabricantes.',
+              ),
+              secondary: const Icon(Icons.sync),
             ),
             const SizedBox(height: 12),
             FilledButton.icon(
@@ -405,8 +568,60 @@ class _StatusPanel extends StatelessWidget {
               icon: const Icon(Icons.settings),
               label: const Text('Habilitar acceso a notificaciones'),
             ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: onOpenAppDetails,
+                  icon: const Icon(Icons.app_settings_alt),
+                  label: const Text('Detalles de la app'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onOpenBatterySettings,
+                  icon: const Icon(Icons.battery_saver),
+                  label: const Text('Ajustes de batería'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onOpenBatteryOptimizationSettings,
+                  icon: const Icon(Icons.power_settings_new),
+                  label: const Text('Optimización'),
+                ),
+              ],
+            ),
+            if (isXiaomi) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Xiaomi/HyperOS: en Ajustes > Aplicaciones > Administrar aplicaciones > VoxNotify, configura Ahorro de batería en “Sin restricciones” y habilita inicio automático. Si usas apps duales o perfil de trabajo, Android puede aislar esas notificaciones en otro usuario.',
+              ),
+            ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _StatusLine extends StatelessWidget {
+  const _StatusLine({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 170,
+            child: Text(label, style: Theme.of(context).textTheme.labelMedium),
+          ),
+          Expanded(child: Text(value)),
+        ],
       ),
     );
   }

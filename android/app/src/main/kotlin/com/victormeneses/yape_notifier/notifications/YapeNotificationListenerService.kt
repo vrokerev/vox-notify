@@ -11,6 +11,7 @@ import com.victormeneses.yape_notifier.storage.ListenerDiagnosticsRepository
 import com.victormeneses.yape_notifier.storage.NativeSettingsRepository
 import com.victormeneses.yape_notifier.storage.PaymentHistoryRepository
 import com.victormeneses.yape_notifier.storage.SharedPreferencesStore
+import com.victormeneses.yape_notifier.storage.VoxNotifyEventBus
 
 class YapeNotificationListenerService : NotificationListenerService() {
     private lateinit var settingsRepository: NativeSettingsRepository
@@ -19,6 +20,7 @@ class YapeNotificationListenerService : NotificationListenerService() {
     private lateinit var diagnosticsRepository: ListenerDiagnosticsRepository
     private lateinit var deduplicator: NotificationDeduplicator
     private lateinit var speech: YapeTextToSpeech
+    private lateinit var rebindScheduler: ListenerRebindScheduler
 
     override fun onCreate() {
         super.onCreate()
@@ -27,28 +29,60 @@ class YapeNotificationListenerService : NotificationListenerService() {
         historyRepository = PaymentHistoryRepository(store)
         appSelectionRepository = AppSelectionRepository(store)
         diagnosticsRepository = ListenerDiagnosticsRepository(store)
-        deduplicator = NotificationDeduplicator(TimeProvider { System.currentTimeMillis() })
-        speech = YapeTextToSpeech(applicationContext)
+        diagnosticsRepository.update(
+            mapOf(
+                "processCreatedAt" to System.currentTimeMillis().toString(),
+                "manufacturer" to android.os.Build.MANUFACTURER,
+                "appStandbyBucket" to standbyBucket(),
+                "batteryOptimizationIgnored" to batteryOptimizationIgnored(),
+            ),
+        )
+        deduplicator = NotificationDeduplicator(
+            TimeProvider { System.currentTimeMillis() },
+            store = store,
+        )
+        speech = YapeTextToSpeech(applicationContext, diagnosticsRepository)
+        rebindScheduler = ListenerRebindScheduler(applicationContext, diagnosticsRepository)
     }
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        rebindScheduler.cancel()
         diagnosticsRepository.update(
             mapOf(
                 "listenerConnected" to "true",
+                "listenerConnectedAt" to System.currentTimeMillis().toString(),
                 "ttsState" to "created",
+                "batteryOptimizationIgnored" to batteryOptimizationIgnored(),
+                "appStandbyBucket" to standbyBucket(),
             ),
         )
+        registerActiveNotificationPackages()
+        VoxNotifyEventBus.emit("listener_connected")
         if (BuildConfig.DEBUG) Log.d(TAG, "listener connected")
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
-        diagnosticsRepository.update(mapOf("listenerConnected" to "false"))
+        diagnosticsRepository.update(
+            mapOf(
+                "listenerConnected" to "false",
+                "listenerDisconnectedAt" to System.currentTimeMillis().toString(),
+            ),
+        )
+        VoxNotifyEventBus.emit("listener_disconnected")
+        rebindScheduler.schedule("onListenerDisconnected")
         if (BuildConfig.DEBUG) Log.d(TAG, "listener disconnected")
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        diagnosticsRepository.update(
+            mapOf(
+                "lastCallbackAt" to System.currentTimeMillis().toString(),
+                "lastCallbackPackage" to sbn.packageName,
+                "lastProcessingResult" to "callback_received",
+            ),
+        )
         val payload = NotificationTextExtractor.fromNotification(
             packageName = sbn.packageName,
             key = sbn.key,
@@ -56,12 +90,19 @@ class YapeNotificationListenerService : NotificationListenerService() {
             postTime = sbn.postTime,
             notification = sbn.notification,
         )
-        appSelectionRepository.registerDetected(
+        val detection = appSelectionRepository.registerDetected(
             payload.packageName,
             AppLabelResolver.labelFor(applicationContext, payload.packageName),
         )
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                TAG,
+                "detected package=${payload.packageName} existed=${detection.existed} previousDetected=${detection.previousDetected} finalDetected=${detection.finalDetected} changed=${detection.changed} origin=onNotificationPosted",
+            )
+        }
         val processor = NotificationProcessor(appSelectionRepository.getEnabledMap(), deduplicator)
         val result = processor.process(payload)
+        diagnosticsRepository.update(mapOf("lastProcessingResult" to result.javaClass.simpleName))
         if (BuildConfig.DEBUG) {
             Log.d(
                 TAG,
@@ -88,10 +129,12 @@ class YapeNotificationListenerService : NotificationListenerService() {
                     "lastDiscardReason" to "",
                     "lastAmount" to result.amount.toPlainString(),
                     "lastSender" to result.sender.orEmpty(),
+                    "lastSpokenText" to phrase,
                     "ttsState" to if (settings.voiceEnabled) "speaking_or_queued" else "voice_disabled",
                 ),
             )
             if (settings.voiceEnabled) {
+                diagnosticsRepository.update(mapOf("lastTtsQueuedAt" to System.currentTimeMillis().toString()))
                 speech.speak(phrase)
             }
         } else if (result is NotificationProcessingResult.SpokenNotification) {
@@ -107,6 +150,12 @@ class YapeNotificationListenerService : NotificationListenerService() {
                 ),
             )
             if (settings.voiceEnabled) {
+                diagnosticsRepository.update(
+                    mapOf(
+                        "lastSpokenText" to result.spokenText,
+                        "lastTtsQueuedAt" to System.currentTimeMillis().toString(),
+                    ),
+                )
                 speech.speak(result.spokenText)
             }
         } else if (BuildConfig.DEBUG && result is NotificationProcessingResult.Ignored) {
@@ -129,8 +178,31 @@ class YapeNotificationListenerService : NotificationListenerService() {
     }
 
     companion object {
-        private const val TAG = "YapeNotifier"
+        private const val TAG = "VoxNotify"
     }
+
+    private fun registerActiveNotificationPackages() {
+        val active = runCatching { activeNotifications ?: emptyArray() }.getOrDefault(emptyArray())
+        active.forEach { sbn ->
+            val label = AppLabelResolver.labelFor(applicationContext, sbn.packageName)
+            val detection = appSelectionRepository.registerDetected(sbn.packageName, label)
+            if (BuildConfig.DEBUG && detection.changed) {
+                Log.d(TAG, "detected package=${sbn.packageName} changed=true origin=activeNotifications")
+            }
+        }
+    }
+
+    private fun batteryOptimizationIgnored(): String {
+        val powerManager = getSystemService(android.os.PowerManager::class.java)
+        return powerManager.isIgnoringBatteryOptimizations(packageName).toString()
+    }
+
+    private fun standbyBucket(): String =
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            getSystemService(android.app.usage.UsageStatsManager::class.java).appStandbyBucket.toString()
+        } else {
+            "unsupported"
+        }
 
     private fun presentFields(payload: NotificationPayload): String =
         listOfNotNull(

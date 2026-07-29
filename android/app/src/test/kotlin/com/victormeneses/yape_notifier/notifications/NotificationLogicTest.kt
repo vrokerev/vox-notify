@@ -197,6 +197,19 @@ class NotificationLogicTest {
     }
 
     @Test
+    fun deduplicatorPersistsKeysAcrossInstances() {
+        val store = InMemoryKeyValueStore()
+        val payload = payload(text = "Recibiste S/ 20", key = "persisted")
+        val amount = BigDecimal("20.00")
+        val first = NotificationDeduplicator(TimeProvider { 1_000L }, store = store)
+        assertTrue(first.markIfNew(payload, amount, "Recibiste S/ 20", "Carlos").first)
+
+        val recreated = NotificationDeduplicator(TimeProvider { 1_100L }, store = store)
+        assertFalse(recreated.markIfNew(payload, amount, "Recibiste S/ 20", "Carlos").first)
+        assertTrue(recreated.markIfNew(payload.copy(notificationKey = "new"), amount, "Recibiste S/ 20", "Carlos").first)
+    }
+
+    @Test
     fun speechFormatterHandlesSingularAndPlural() {
         assertEquals("VICTOR MANUEL MENESES te envió 1 sol por Yape.", YapeSpeechFormatter.phrase(BigDecimal("1.00"), "VICTOR MANUEL MENESES", true))
         assertEquals("María López te envió 25 soles con 50 céntimos por Yape.", YapeSpeechFormatter.phrase(BigDecimal("25.50"), "María López", true))
@@ -225,6 +238,9 @@ class NotificationLogicTest {
         repo.update(NativeSettings(voiceEnabled = false, fullPhrase = false))
         assertFalse(repo.get().voiceEnabled)
         assertFalse(repo.get().fullPhrase)
+        assertFalse(repo.get().continuousBackground)
+        repo.update(repo.get().copy(continuousBackground = true))
+        assertTrue(repo.get().continuousBackground)
     }
 
     @Test
@@ -271,11 +287,33 @@ class NotificationLogicTest {
     @Test
     fun appSelectionRepositoryRegistersDetectedAppsDisabled() {
         val repo = AppSelectionRepository(InMemoryKeyValueStore())
-        repo.registerDetected("com.bank.test", "Banco")
+        val created = repo.registerDetected("com.bank.test", "Banco")
+        assertTrue(created.changed)
         val app = repo.getAll().first { it.packageName == "com.bank.test" }
         assertEquals("Banco", app.label)
         assertFalse(app.enabled)
         assertEquals(AppReadMode.TITLE_AND_CONTENT, app.readMode)
+        assertTrue(app.detected)
+    }
+
+    @Test
+    fun appSelectionRepositoryUpdatesExistingDetectedStateWithoutDuplicates() {
+        val repo = AppSelectionRepository(InMemoryKeyValueStore())
+        repo.upsert(AppSelection("com.chat.test", "Chat viejo", true, AppReadMode.SENDER_ONLY, false))
+
+        val change = repo.registerDetected("com.chat.test", "Chat nuevo")
+        val apps = repo.getAll().filter { it.packageName == "com.chat.test" }
+
+        assertTrue(change.changed)
+        assertEquals(1, apps.size)
+        assertEquals("Chat nuevo", apps.first().label)
+        assertTrue(apps.first().detected)
+        assertTrue(apps.first().enabled)
+        assertEquals(AppReadMode.SENDER_ONLY, apps.first().readMode)
+
+        val repeated = repo.registerDetected("com.chat.test", "Chat nuevo")
+        assertFalse(repeated.changed)
+        assertEquals(1, repo.getAll().count { it.packageName == "com.chat.test" })
     }
 
     private fun processor(): YapeNotificationProcessor =

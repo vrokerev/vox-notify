@@ -58,6 +58,7 @@ data class PaymentRecord(
 data class NativeSettings(
     val voiceEnabled: Boolean = true,
     val fullPhrase: Boolean = true,
+    val continuousBackground: Boolean = false,
 )
 
 enum class AppReadMode {

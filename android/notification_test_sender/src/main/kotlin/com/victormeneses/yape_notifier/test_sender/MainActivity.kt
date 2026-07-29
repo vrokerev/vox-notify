@@ -76,10 +76,6 @@ class MainActivity : Activity() {
             .setContentTitle(scenario.title)
             .setContentText(scenario.text)
             .setAutoCancel(false)
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            @Suppress("DEPRECATION")
-            builder.setPriority(Notification.PRIORITY_HIGH)
-        }
         if (scenario.bigText != null) {
             builder.setStyle(Notification.BigTextStyle().bigText(scenario.bigText))
         }

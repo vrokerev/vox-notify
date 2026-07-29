@@ -3,7 +3,9 @@ package com.victormeneses.yape_notifier.nativebridge
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import com.victormeneses.yape_notifier.notifications.AllowedPackages
@@ -18,6 +20,7 @@ import com.victormeneses.yape_notifier.notifications.PaymentRecord
 import com.victormeneses.yape_notifier.notifications.TimeProvider
 import com.victormeneses.yape_notifier.notifications.YapeSpeechFormatter
 import com.victormeneses.yape_notifier.notifications.YapeNotificationListenerService
+import com.victormeneses.yape_notifier.notifications.VoxNotifyForegroundService
 import com.victormeneses.yape_notifier.storage.AppSelectionRepository
 import com.victormeneses.yape_notifier.storage.ListenerDiagnosticsRepository
 import com.victormeneses.yape_notifier.speech.YapeTextToSpeech
@@ -47,7 +50,15 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
             "updateSettings" -> {
                 val voiceEnabled = call.argument<Boolean>("voiceEnabled") ?: true
                 val fullPhrase = call.argument<Boolean>("fullPhrase") ?: true
-                result.success(settingsRepository.update(NativeSettings(voiceEnabled, fullPhrase)).toMap())
+                val continuousBackground = call.argument<Boolean>("continuousBackground")
+                    ?: settingsRepository.get().continuousBackground
+                val updated = settingsRepository.update(NativeSettings(voiceEnabled, fullPhrase, continuousBackground))
+                if (updated.continuousBackground) {
+                    VoxNotifyForegroundService.start(context.applicationContext)
+                } else {
+                    VoxNotifyForegroundService.stop(context.applicationContext)
+                }
+                result.success(updated.toMap())
             }
             "testSpeech" -> {
                 val settings = settingsRepository.get()
@@ -57,6 +68,10 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
             }
             "getHistory" -> result.success(historyRepository.get().map { it.toMap() })
             "getListenerDiagnostics" -> result.success(diagnosticsRepository.get())
+            "getBatteryOptimizationIgnored" -> {
+                val powerManager = context.getSystemService(PowerManager::class.java)
+                result.success(powerManager.isIgnoringBatteryOptimizations(context.packageName))
+            }
             "getAvailableApps" -> result.success(
                 AppLabelResolver.visibleLauncherApps(context.applicationContext, appSelectionRepository)
                     .map { it.toMap() },
@@ -81,6 +96,43 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                     NotificationListenerService.requestRebind(ComponentName(context, YapeNotificationListenerService::class.java))
                 }
+                result.success(null)
+            }
+            "startContinuousBackground" -> {
+                val current = settingsRepository.get()
+                settingsRepository.update(current.copy(continuousBackground = true))
+                VoxNotifyForegroundService.start(context.applicationContext)
+                result.success(settingsRepository.get().toMap())
+            }
+            "stopContinuousBackground" -> {
+                val current = settingsRepository.get()
+                settingsRepository.update(current.copy(continuousBackground = false))
+                VoxNotifyForegroundService.stop(context.applicationContext)
+                result.success(settingsRepository.get().toMap())
+            }
+            "openAppDetailsSettings" -> {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:${context.packageName}"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                result.success(null)
+            }
+            "openBatterySettings" -> {
+                val intent = Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                runCatching { context.startActivity(intent) }
+                    .onFailure {
+                        context.startActivity(
+                            Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                result.success(null)
+            }
+            "openBatteryOptimizationSettings" -> {
+                context.startActivity(
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
                 result.success(null)
             }
             "runDebugPayload" -> result.success(runDebugPayload(call.argument<String>("text").orEmpty()))
@@ -127,11 +179,16 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
 
     companion object {
         const val CHANNEL_NAME = "yape_notifier/native"
+        const val EVENT_CHANNEL_NAME = "voxnotify/events"
     }
 }
 
 private fun NativeSettings.toMap(): Map<String, Any> =
-    mapOf("voiceEnabled" to voiceEnabled, "fullPhrase" to fullPhrase)
+    mapOf(
+        "voiceEnabled" to voiceEnabled,
+        "fullPhrase" to fullPhrase,
+        "continuousBackground" to continuousBackground,
+    )
 
 private fun PaymentRecord.toMap(): Map<String, Any> =
     mapOf(

@@ -30,7 +30,7 @@ class AndroidIntegrationTest {
     @Test
     fun sharedPreferencesSettingsRoundTrip() {
         val repo = NativeSettingsRepository(SharedPreferencesStore(context))
-        repo.update(com.victormeneses.yape_notifier.notifications.NativeSettings(false, false))
+        repo.update(com.victormeneses.yape_notifier.notifications.NativeSettings(false, false, false))
         assertEquals(false, repo.get().voiceEnabled)
         assertEquals(false, repo.get().fullPhrase)
     }

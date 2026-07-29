@@ -33,12 +33,29 @@ class AppSelectionRepository(private val store: KeyValueStore) {
             label = label ?: current.label,
         )
         upsert(updated)
+        VoxNotifyEventBus.emit("app_selection_changed")
         return updated
     }
 
-    fun registerDetected(packageName: String, label: String) {
-        if (getAll().any { it.packageName == packageName }) return
-        upsert(AppSelection(packageName, label, false, AppReadMode.TITLE_AND_CONTENT, true))
+    fun registerDetected(packageName: String, label: String): DetectionChange {
+        val current = getAll().firstOrNull { it.packageName == packageName }
+        val updated = if (current == null) {
+            AppSelection(packageName, label, false, AppReadMode.TITLE_AND_CONTENT, true)
+        } else {
+            current.copy(label = label, detected = true)
+        }
+        val changed = current == null || current.detected != updated.detected || current.label != updated.label
+        if (changed) {
+            upsert(updated)
+            VoxNotifyEventBus.emit("app_detected")
+        }
+        return DetectionChange(
+            packageName = packageName,
+            existed = current != null,
+            previousDetected = current?.detected,
+            finalDetected = updated.detected,
+            changed = changed,
+        )
     }
 
     private fun defaults(): List<AppSelection> = buildList {
@@ -100,3 +117,11 @@ class AppSelectionRepository(private val store: KeyValueStore) {
         private const val KEY_APPS = "app_selections"
     }
 }
+
+data class DetectionChange(
+    val packageName: String,
+    val existed: Boolean,
+    val previousDetected: Boolean?,
+    val finalDetected: Boolean,
+    val changed: Boolean,
+)
