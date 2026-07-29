@@ -11,32 +11,80 @@ import android.os.Build
 import android.os.IBinder
 import com.victormeneses.yape_notifier.MainActivity
 import com.victormeneses.yape_notifier.storage.ListenerDiagnosticsRepository
+import com.victormeneses.yape_notifier.storage.NativeSettingsRepository
 import com.victormeneses.yape_notifier.storage.SharedPreferencesStore
 import com.victormeneses.yape_notifier.storage.VoxNotifyEventBus
 
 class VoxNotifyForegroundService : Service() {
     private lateinit var diagnosticsRepository: ListenerDiagnosticsRepository
+    private lateinit var settingsRepository: NativeSettingsRepository
 
     override fun onCreate() {
         super.onCreate()
-        diagnosticsRepository = ListenerDiagnosticsRepository(SharedPreferencesStore(applicationContext))
+        val store = SharedPreferencesStore(applicationContext)
+        diagnosticsRepository = ListenerDiagnosticsRepository(store)
+        settingsRepository = NativeSettingsRepository(store)
         createChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            settingsRepository.update(settingsRepository.get().copy(continuousBackground = false))
+            diagnosticsRepository.update(
+                mapOf(
+                    "foregroundSpeechServiceRunning" to "false",
+                    "lastProcessingResult" to "foreground_stop_action",
+                ),
+            )
+            running = false
+            VoxNotifyEventBus.emit("foreground_service_changed")
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, notification())
-        diagnosticsRepository.update(mapOf("foregroundSpeechServiceRunning" to "true"))
+        if (intent == null && !settingsRepository.get().continuousBackground) {
+            diagnosticsRepository.update(
+                mapOf(
+                    "foregroundSpeechServiceRunning" to "false",
+                    "lastProcessingResult" to "foreground_sticky_ignored_pref_false",
+                ),
+            )
+            running = false
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        runCatching {
+            startForeground(NOTIFICATION_ID, notification())
+        }.onFailure { error ->
+            diagnosticsRepository.update(
+                mapOf(
+                    "foregroundSpeechServiceRunning" to "false",
+                    "lastProcessingResult" to "foreground_start_failed:${error.javaClass.simpleName}",
+                ),
+            )
+            running = false
+            throw error
+        }
+        running = true
+        diagnosticsRepository.update(
+            mapOf(
+                "foregroundSpeechServiceRunning" to "true",
+                "lastProcessingResult" to "foreground_service_start",
+            ),
+        )
         VoxNotifyEventBus.emit("foreground_service_changed")
         ListenerRebindScheduler(applicationContext, diagnosticsRepository).request("foreground_service_start")
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        diagnosticsRepository.update(mapOf("lastProcessingResult" to "foreground_onTaskRemoved"))
+        VoxNotifyEventBus.emit("foreground_service_changed")
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         diagnosticsRepository.update(mapOf("foregroundSpeechServiceRunning" to "false"))
+        running = false
         VoxNotifyEventBus.emit("foreground_service_changed")
         super.onDestroy()
     }
@@ -87,6 +135,7 @@ class VoxNotifyForegroundService : Service() {
         private const val CHANNEL_ID = "voxnotify_background"
         private const val NOTIFICATION_ID = 4201
         private const val ACTION_STOP = "com.victormeneses.yape_notifier.STOP_BACKGROUND"
+        @Volatile private var running = false
 
         fun start(context: Context) {
             val intent = Intent(context, VoxNotifyForegroundService::class.java)
@@ -100,5 +149,7 @@ class VoxNotifyForegroundService : Service() {
         fun stop(context: Context) {
             context.stopService(Intent(context, VoxNotifyForegroundService::class.java))
         }
+
+        fun isRunning(): Boolean = running
     }
 }

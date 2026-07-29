@@ -49,6 +49,7 @@
         <service
             android:name=".notifications.VoxNotifyForegroundService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="mediaPlayback" />
 
         <receiver

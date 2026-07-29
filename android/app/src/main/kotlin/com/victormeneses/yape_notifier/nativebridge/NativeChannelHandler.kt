@@ -1,8 +1,11 @@
 package com.victormeneses.yape_notifier.nativebridge
 
+import android.Manifest
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
@@ -67,7 +70,13 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
                 result.success(phrase)
             }
             "getHistory" -> result.success(historyRepository.get().map { it.toMap() })
-            "getListenerDiagnostics" -> result.success(diagnosticsRepository.get())
+            "getListenerDiagnostics" -> result.success(listenerDiagnostics())
+            "hasPostNotificationsPermission" -> result.success(hasPostNotificationsPermission())
+            "requestPostNotificationsPermission" -> {
+                requestPostNotificationsPermission()
+                result.success(hasPostNotificationsPermission())
+            }
+            "isContinuousBackgroundRunning" -> result.success(VoxNotifyForegroundService.isRunning())
             "getBatteryOptimizationIgnored" -> {
                 val powerManager = context.getSystemService(PowerManager::class.java)
                 result.success(powerManager.isIgnoringBatteryOptimizations(context.packageName))
@@ -102,13 +111,13 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
                 val current = settingsRepository.get()
                 settingsRepository.update(current.copy(continuousBackground = true))
                 VoxNotifyForegroundService.start(context.applicationContext)
-                result.success(settingsRepository.get().toMap())
+                result.success(settingsWithRuntimeState())
             }
             "stopContinuousBackground" -> {
                 val current = settingsRepository.get()
                 settingsRepository.update(current.copy(continuousBackground = false))
                 VoxNotifyForegroundService.stop(context.applicationContext)
-                result.success(settingsRepository.get().toMap())
+                result.success(settingsWithRuntimeState())
             }
             "openAppDetailsSettings" -> {
                 context.startActivity(
@@ -139,6 +148,31 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
             else -> result.notImplemented()
         }
     }
+
+    private fun hasPostNotificationsPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
+    private fun requestPostNotificationsPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val activity = context as? Activity ?: return
+        if (hasPostNotificationsPermission()) return
+        activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), POST_NOTIFICATIONS_REQUEST_CODE)
+    }
+
+    private fun listenerDiagnostics(): Map<String, String> {
+        val diagnostics = diagnosticsRepository.get().toMutableMap()
+        diagnostics["foregroundSpeechServiceActuallyRunning"] = VoxNotifyForegroundService.isRunning().toString()
+        diagnostics["postNotificationsPermissionGranted"] = hasPostNotificationsPermission().toString()
+        return diagnostics
+    }
+
+    private fun settingsWithRuntimeState(): Map<String, Any> =
+        settingsRepository.get().toMap() +
+            mapOf(
+                "continuousBackgroundRunning" to VoxNotifyForegroundService.isRunning(),
+                "postNotificationsPermissionGranted" to hasPostNotificationsPermission(),
+            )
 
     private fun runDebugPayload(text: String): Map<String, Any?> {
         val now = System.currentTimeMillis()
@@ -180,6 +214,7 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
     companion object {
         const val CHANNEL_NAME = "yape_notifier/native"
         const val EVENT_CHANNEL_NAME = "voxnotify/events"
+        private const val POST_NOTIFICATIONS_REQUEST_CODE = 4202
     }
 }
 

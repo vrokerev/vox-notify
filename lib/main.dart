@@ -42,6 +42,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _voiceEnabled = true;
   bool _fullPhrase = true;
   bool _continuousBackground = false;
+  bool _continuousBackgroundRunning = false;
+  bool _postNotificationsGranted = false;
   bool _batteryOptimizationIgnored = false;
   bool _loading = true;
   String? _debugResult;
@@ -91,6 +93,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final history = await _loadHistory();
     final apps = await _loadApps();
     final diagnostics = await _loadDiagnostics();
+    final backgroundRunning =
+        await _channel.invokeMethod<bool>('isContinuousBackgroundRunning') ??
+        false;
+    final postGranted =
+        await _channel.invokeMethod<bool>('hasPostNotificationsPermission') ??
+        false;
     final batteryIgnored =
         await _channel.invokeMethod<bool>('getBatteryOptimizationIgnored') ??
         false;
@@ -101,6 +109,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _fullPhrase = settings['fullPhrase'] as bool? ?? true;
       _continuousBackground =
           settings['continuousBackground'] as bool? ?? false;
+      _continuousBackgroundRunning = backgroundRunning;
+      _postNotificationsGranted = postGranted;
       _batteryOptimizationIgnored = batteryIgnored;
       _history = history;
       _apps = apps;
@@ -153,6 +163,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _fullPhrase = updated['fullPhrase'] as bool? ?? _fullPhrase;
       _continuousBackground =
           updated['continuousBackground'] as bool? ?? _continuousBackground;
+      _continuousBackgroundRunning =
+          updated['continuousBackgroundRunning'] as bool? ??
+          _continuousBackgroundRunning;
+      _postNotificationsGranted =
+          updated['postNotificationsPermissionGranted'] as bool? ??
+          _postNotificationsGranted;
     });
   }
 
@@ -178,6 +194,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
       );
       if (confirmed != true) return;
+      final granted =
+          await _channel.invokeMethod<bool>(
+            'requestPostNotificationsPermission',
+          ) ??
+          false;
+      if (mounted) {
+        setState(() => _postNotificationsGranted = granted);
+      }
     }
     final updated = Map<String, Object?>.from(
       await _channel.invokeMethod<Map<dynamic, dynamic>>(
@@ -189,6 +213,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() {
       _continuousBackground =
           updated['continuousBackground'] as bool? ?? enabled;
+      _continuousBackgroundRunning =
+          updated['continuousBackgroundRunning'] as bool? ??
+          _continuousBackgroundRunning;
+      _postNotificationsGranted =
+          updated['postNotificationsPermissionGranted'] as bool? ??
+          _postNotificationsGranted;
     });
     await _refresh(silent: true);
   }
@@ -283,6 +313,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               diagnostics: _diagnostics,
               voiceEnabled: _voiceEnabled,
               continuousBackground: _continuousBackground,
+              continuousBackgroundRunning: _continuousBackgroundRunning,
+              postNotificationsGranted: _postNotificationsGranted,
               batteryOptimizationIgnored: _batteryOptimizationIgnored,
               onOpenSettings: _openSettings,
               onContinuousChanged: _setContinuousBackground,
@@ -460,6 +492,8 @@ class _StatusPanel extends StatelessWidget {
     required this.diagnostics,
     required this.voiceEnabled,
     required this.continuousBackground,
+    required this.continuousBackgroundRunning,
+    required this.postNotificationsGranted,
     required this.batteryOptimizationIgnored,
     required this.onOpenSettings,
     required this.onContinuousChanged,
@@ -473,6 +507,8 @@ class _StatusPanel extends StatelessWidget {
   final Map<String, String> diagnostics;
   final bool voiceEnabled;
   final bool continuousBackground;
+  final bool continuousBackgroundRunning;
+  final bool postNotificationsGranted;
   final bool batteryOptimizationIgnored;
   final VoidCallback onOpenSettings;
   final ValueChanged<bool> onContinuousChanged;
@@ -489,6 +525,8 @@ class _StatusPanel extends StatelessWidget {
         manufacturer.contains('xiaomi') ||
         manufacturer.contains('redmi') ||
         manufacturer.contains('poco');
+    final backgroundMismatch =
+        continuousBackground && !continuousBackgroundRunning;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -525,7 +563,15 @@ class _StatusPanel extends StatelessWidget {
             ),
             _StatusLine(
               label: 'Lectura en segundo plano',
-              value: continuousBackground ? 'Activa' : 'Inactiva',
+              value: continuousBackground
+                  ? continuousBackgroundRunning
+                        ? 'Activa y corriendo'
+                        : 'Activada, servicio detenido'
+                  : 'Inactiva',
+            ),
+            _StatusLine(
+              label: 'Notificación persistente',
+              value: postNotificationsGranted ? 'Permitida' : 'Bloqueada',
             ),
             _StatusLine(
               label: 'Voz',
@@ -550,14 +596,30 @@ class _StatusPanel extends StatelessWidget {
                   : 'Sin frases',
             ),
             const SizedBox(height: 8),
+            if (backgroundMismatch) ...[
+              Text(
+                'La lectura continua está activada, pero Android no mantiene el servicio corriendo ahora mismo.',
+                style: TextStyle(color: Colors.orange.shade900),
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (!postNotificationsGranted) ...[
+              Text(
+                'Android bloqueó la notificación persistente de VoxNotify. Permítela en los detalles de la app para que el servicio sea visible.',
+                style: TextStyle(color: Colors.orange.shade900),
+              ),
+              const SizedBox(height: 8),
+            ],
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: continuousBackground,
               onChanged: onContinuousChanged,
               title: const Text('Lectura continua en segundo plano'),
               subtitle: Text(
-                continuousBackground
-                    ? 'Notificación persistente activa.'
+                continuousBackgroundRunning
+                    ? 'Servicio foreground corriendo.'
+                    : continuousBackground
+                    ? 'Configurada, esperando que Android levante el servicio.'
                     : 'La fiabilidad puede disminuir en algunos fabricantes.',
               ),
               secondary: const Icon(Icons.sync),

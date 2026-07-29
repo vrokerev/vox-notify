@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.provider.Settings
 import androidx.test.core.app.ApplicationProvider
@@ -79,6 +80,17 @@ class AndroidIntegrationTest {
         val service = context.packageManager.getServiceInfo(component, PackageManager.GET_META_DATA)
         assertNotNull(service)
         assertEquals(android.Manifest.permission.BIND_NOTIFICATION_LISTENER_SERVICE, service.permission)
+    }
+
+    @Test
+    fun foregroundServiceSurvivesTaskRemovalInManifest() {
+        val component = ComponentName(context, "com.victormeneses.yape_notifier.notifications.VoxNotifyForegroundService")
+        val service = context.packageManager.getServiceInfo(component, PackageManager.GET_META_DATA)
+        assertNotNull(service)
+        assertEquals(0, service.flags and ServiceInfo.FLAG_STOP_WITH_TASK)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            assertTrue(service.foregroundServiceType and ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK != 0)
+        }
     }
 
     @Test
