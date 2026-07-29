@@ -302,6 +302,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await _refresh();
   }
 
+  Future<void> _runListenerProbe() async {
+    final result = Map<String, Object?>.from(
+      await _channel.invokeMethod<Map<dynamic, dynamic>>('runListenerProbe') ??
+          {},
+    );
+    if (!mounted) return;
+    setState(
+      () => _debugResult = result.entries
+          .map((entry) => '${entry.key}: ${entry.value}')
+          .join(' | '),
+    );
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _refresh(silent: true);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -346,6 +361,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 result: _debugResult,
                 diagnostics: _diagnostics,
                 onRun: _runDebugPayload,
+                onListenerProbe: _runListenerProbe,
               ),
             ],
             const SizedBox(height: 12),
@@ -459,20 +475,29 @@ class _AppTile extends StatelessWidget {
       children: [
         SwitchListTile(
           value: app.enabled,
-          onChanged: (value) => onChanged(app, enabled: value),
+          onChanged: app.installed || app.detected
+              ? (value) => onChanged(app, enabled: value)
+              : null,
           title: Text(app.label),
-          subtitle: Text(app.packageName),
+          subtitle: Text(
+            '${app.packageName}\n${app.installed ? 'Instalada' : 'No instalada en este perfil'} · ${app.detected ? 'Detectada por listener' : 'No detectada'} · ${app.userProfile}',
+          ),
+          isThreeLine: true,
           secondary: Icon(
             app.readMode == 'SMART_YAPE'
                 ? Icons.auto_awesome
                 : Icons.notifications,
           ),
         ),
-        if (app.enabled && app.readMode != 'SMART_YAPE')
+        if (app.enabled)
           Padding(
             padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
             child: SegmentedButton<String>(
               segments: const [
+                ButtonSegment(
+                  value: 'SMART_YAPE',
+                  label: Text('Yape inteligente'),
+                ),
                 ButtonSegment(
                   value: 'TITLE_AND_CONTENT',
                   label: Text('Título y mensaje'),
@@ -882,11 +907,13 @@ class _DebugTools extends StatelessWidget {
     required this.result,
     required this.diagnostics,
     required this.onRun,
+    required this.onListenerProbe,
   });
 
   final String? result;
   final Map<String, String> diagnostics;
   final ValueChanged<String> onRun;
+  final VoidCallback onListenerProbe;
 
   @override
   Widget build(BuildContext context) {
@@ -923,6 +950,12 @@ class _DebugTools extends StatelessWidget {
                     ),
                   )
                   .toList(),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: onListenerProbe,
+              icon: const Icon(Icons.sensors),
+              label: const Text('Probar listener real'),
             ),
             if (result != null) ...[const SizedBox(height: 12), Text(result!)],
             if (diagnostics.isNotEmpty) ...[
@@ -1000,6 +1033,8 @@ class ReadableApp {
     required this.enabled,
     required this.readMode,
     required this.detected,
+    required this.installed,
+    required this.userProfile,
   });
 
   factory ReadableApp.fromMap(Map<String, Object?> map) => ReadableApp(
@@ -1008,6 +1043,8 @@ class ReadableApp {
     enabled: map['enabled'] as bool? ?? false,
     readMode: map['readMode'] as String? ?? 'TITLE_AND_CONTENT',
     detected: map['detected'] as bool? ?? false,
+    installed: map['installed'] as bool? ?? false,
+    userProfile: map['userProfile'] as String? ?? '',
   );
 
   final String packageName;
@@ -1015,4 +1052,6 @@ class ReadableApp {
   final bool enabled;
   final String readMode;
   final bool detected;
+  final bool installed;
+  final String userProfile;
 }

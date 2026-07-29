@@ -74,6 +74,8 @@ data class AppSelection(
     val enabled: Boolean,
     val readMode: AppReadMode,
     val detected: Boolean,
+    val installed: Boolean = false,
+    val userProfile: String = "user 0",
 )
 
 fun interface TimeProvider {

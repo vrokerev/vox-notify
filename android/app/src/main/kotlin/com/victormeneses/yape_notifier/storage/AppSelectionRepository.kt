@@ -1,6 +1,5 @@
 package com.victormeneses.yape_notifier.storage
 
-import com.victormeneses.yape_notifier.BuildConfig
 import com.victormeneses.yape_notifier.notifications.AllowedPackages
 import com.victormeneses.yape_notifier.notifications.AppReadMode
 import com.victormeneses.yape_notifier.notifications.AppSelection
@@ -11,7 +10,7 @@ class AppSelectionRepository(private val store: KeyValueStore) {
             .lineSequence()
             .mapNotNull { deserialize(it) }
             .associateBy { it.packageName }
-        return (defaults().associateBy { it.packageName } + stored)
+        return stored
             .values
             .sortedWith(compareByDescending<AppSelection> { it.enabled }.thenBy { it.label.lowercase() })
     }
@@ -38,6 +37,15 @@ class AppSelectionRepository(private val store: KeyValueStore) {
     }
 
     fun registerDetected(packageName: String, label: String): DetectionChange {
+        if (packageName == SELF_PACKAGE) {
+            return DetectionChange(
+                packageName = packageName,
+                existed = getAll().any { it.packageName == packageName },
+                previousDetected = false,
+                finalDetected = false,
+                changed = false,
+            )
+        }
         val current = getAll().firstOrNull { it.packageName == packageName }
         val updated = if (current == null) {
             AppSelection(packageName, label, false, AppReadMode.TITLE_AND_CONTENT, true)
@@ -58,11 +66,28 @@ class AppSelectionRepository(private val store: KeyValueStore) {
         )
     }
 
-    private fun defaults(): List<AppSelection> = buildList {
-        add(AppSelection(AllowedPackages.YAPE_PACKAGE, "Yape", true, AppReadMode.SMART_YAPE, false))
-        if (BuildConfig.ALLOW_TEST_SENDER) {
-            add(AppSelection(AllowedPackages.TEST_SENDER_PACKAGE, "VoxNotify Test Sender", true, AppReadMode.SMART_YAPE, false))
+    fun reconcileKnownYapeInstallation(installed: Boolean, label: String) {
+        val current = getAll().firstOrNull { it.packageName == AllowedPackages.YAPE_PACKAGE }
+        val updated = when {
+            installed && current == null -> AppSelection(
+                packageName = AllowedPackages.YAPE_PACKAGE,
+                label = label,
+                enabled = true,
+                readMode = AppReadMode.SMART_YAPE,
+                detected = false,
+            )
+            installed && current != null -> current.copy(
+                label = label,
+                enabled = true,
+                readMode = AppReadMode.SMART_YAPE,
+            )
+            !installed && current != null && !current.detected -> current.copy(
+                label = label,
+                enabled = false,
+            )
+            else -> return
         }
+        upsert(updated)
     }
 
     private fun save(apps: List<AppSelection>) {
@@ -115,6 +140,7 @@ class AppSelectionRepository(private val store: KeyValueStore) {
 
     companion object {
         private const val KEY_APPS = "app_selections"
+        private const val SELF_PACKAGE = "com.victormeneses.yape_notifier"
     }
 }
 

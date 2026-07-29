@@ -21,7 +21,15 @@ class ListenerDiagnosticsRepository(private val store: KeyValueStore) {
             "rebindRequestedAt",
             "lastCallbackAt",
             "lastCallbackPackage",
+            "lastCallbackNotificationId",
+            "lastCallbackNotificationKey",
+            "lastCallbackUser",
+            "lastCallbackTitlePresent",
+            "lastCallbackFieldsPresent",
             "lastProcessingResult",
+            "lastSelectionFound",
+            "lastSelectionReadMode",
+            "lastSelectionEnabled",
             "lastTtsQueuedAt",
             "lastTtsStartedAt",
             "lastTtsCompletedAt",
@@ -52,6 +60,9 @@ class ListenerDiagnosticsRepository(private val store: KeyValueStore) {
             "lastYapeSummaryText",
             "lastYapeTextLines",
             "lastYapeParserResult",
+            "listenerProbePostedAt",
+            "listenerProbeReceivedAt",
+            "listenerProbeResult",
         )
     }
 }

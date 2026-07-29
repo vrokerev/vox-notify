@@ -5,6 +5,7 @@ import android.service.notification.StatusBarNotification
 import android.util.Log
 import com.victormeneses.yape_notifier.BuildConfig
 import com.victormeneses.yape_notifier.nativebridge.AppLabelResolver
+import com.victormeneses.yape_notifier.nativebridge.NativeChannelHandler
 import com.victormeneses.yape_notifier.speech.YapeTextToSpeech
 import com.victormeneses.yape_notifier.storage.AppSelectionRepository
 import com.victormeneses.yape_notifier.storage.ListenerDiagnosticsRepository
@@ -29,6 +30,14 @@ class YapeNotificationListenerService : NotificationListenerService() {
         historyRepository = PaymentHistoryRepository(store)
         appSelectionRepository = AppSelectionRepository(store)
         diagnosticsRepository = ListenerDiagnosticsRepository(store)
+        val yapeInstalled = AppLabelResolver.isInstalled(applicationContext, AllowedPackages.YAPE_PACKAGE)
+        val yapeLabel = if (yapeInstalled) {
+            val resolved = AppLabelResolver.labelFor(applicationContext, AllowedPackages.YAPE_PACKAGE)
+            if (resolved == AllowedPackages.YAPE_PACKAGE) "Yape" else resolved
+        } else {
+            "Yape no encontrada"
+        }
+        appSelectionRepository.reconcileKnownYapeInstallation(yapeInstalled, yapeLabel)
         diagnosticsRepository.update(
             mapOf(
                 "processCreatedAt" to System.currentTimeMillis().toString(),
@@ -81,6 +90,9 @@ class YapeNotificationListenerService : NotificationListenerService() {
             mapOf(
                 "lastCallbackAt" to callbackAt.toString(),
                 "lastCallbackPackage" to sbn.packageName,
+                "lastCallbackNotificationId" to sbn.id.toString(),
+                "lastCallbackNotificationKey" to sbn.key,
+                "lastCallbackUser" to sbn.user.toString(),
                 "lastProcessingResult" to "callback_received",
             ),
         )
@@ -92,6 +104,24 @@ class YapeNotificationListenerService : NotificationListenerService() {
             postTime = sbn.postTime,
             notification = sbn.notification,
         )
+        diagnosticsRepository.update(
+            mapOf(
+                "lastCallbackTitlePresent" to (!payload.title.isNullOrBlank()).toString(),
+                "lastCallbackFieldsPresent" to presentFields(payload),
+            ),
+        )
+        if (isListenerProbe(sbn, payload)) {
+            diagnosticsRepository.update(
+                mapOf(
+                    "listenerProbeReceivedAt" to callbackAt.toString(),
+                    "listenerProbeResult" to "received_by_notification_listener",
+                    "lastProcessingResult" to "listener_probe_received",
+                    "lastDiscardReason" to "LISTENER_PROBE",
+                ),
+            )
+            VoxNotifyEventBus.emit("listener_probe_received")
+            return
+        }
         if (payload.packageName == AllowedPackages.YAPE_PACKAGE) {
             diagnosticsRepository.update(yapeDebugFields(payload, "callback_received"))
         }
@@ -106,8 +136,23 @@ class YapeNotificationListenerService : NotificationListenerService() {
             )
         }
         val processor = NotificationProcessor(appSelectionRepository.getEnabledMap(), deduplicator)
+        val selection = appSelectionRepository.getAll().firstOrNull { it.packageName == payload.packageName }
+        diagnosticsRepository.update(
+            mapOf(
+                "lastSelectionFound" to (selection != null).toString(),
+                "lastSelectionReadMode" to selection?.readMode?.name.orEmpty(),
+                "lastSelectionEnabled" to selection?.enabled?.toString().orEmpty(),
+            ),
+        )
         val result = processor.process(payload)
-        diagnosticsRepository.update(mapOf("lastProcessingResult" to result.javaClass.simpleName))
+        diagnosticsRepository.update(
+            mapOf(
+                "lastProcessingResult" to processingSummary(result),
+                "lastDiscardReason" to if (result is NotificationProcessingResult.Ignored) result.reason.name else "",
+                "lastAmount" to if (result is NotificationProcessingResult.PaymentReceived) result.amount.toPlainString() else "",
+                "lastSender" to if (result is NotificationProcessingResult.PaymentReceived) result.sender.orEmpty() else "",
+            ),
+        )
         if (payload.packageName == AllowedPackages.YAPE_PACKAGE) {
             diagnosticsRepository.update(
                 mapOf("lastYapeParserResult" to processingSummary(result)),
@@ -227,6 +272,12 @@ class YapeNotificationListenerService : NotificationListenerService() {
             "summaryText".takeIf { !payload.summaryText.isNullOrBlank() },
             "textLines".takeIf { payload.textLines.isNotEmpty() },
         ).joinToString(",")
+
+    private fun isListenerProbe(sbn: StatusBarNotification, payload: NotificationPayload): Boolean =
+        payload.packageName == packageName &&
+            sbn.id == NativeChannelHandler.LISTENER_PROBE_ID &&
+            sbn.tag == NativeChannelHandler.LISTENER_PROBE_TAG &&
+            payload.title == NativeChannelHandler.LISTENER_PROBE_TITLE
 
     private fun yapeDebugFields(payload: NotificationPayload, parserResult: String): Map<String, String?> =
         mapOf(

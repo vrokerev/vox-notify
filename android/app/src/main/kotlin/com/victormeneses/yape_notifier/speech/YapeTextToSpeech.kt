@@ -159,11 +159,29 @@ class YapeTextToSpeech(
 
     private fun speakNextIfNeeded() {
         if (!ready || speaking || pending.isEmpty()) return
-        if (appContext.applicationInfo.targetSdkVersion >= 35 && !VoxNotifyForegroundService.isRunning()) {
-            VoxNotifyForegroundService.start(appContext)
-            diagnosticsRepository?.update(mapOf("ttsState" to "foreground_start_before_focus"))
-        }
         val text = pending.first()
+        if (appContext.applicationInfo.targetSdkVersion >= 35 && !VoxNotifyForegroundService.isRunning()) {
+            val retry = (focusRetries["foreground:$text"] ?: 0) + 1
+            VoxNotifyForegroundService.start(appContext)
+            diagnosticsRepository?.update(
+                mapOf(
+                    "ttsState" to "waiting_for_foreground_before_focus",
+                    "lastTtsFocusRetryAt" to System.currentTimeMillis().toString(),
+                ),
+            )
+            if (retry <= MAX_FOCUS_RETRIES) {
+                focusRetries["foreground:$text"] = retry
+                retryHandler.postDelayed({ speakNextIfNeeded() }, FOCUS_RETRY_DELAY_MS)
+            } else {
+                diagnosticsRepository?.update(
+                    mapOf(
+                        "lastTtsError" to "foreground_service_not_ready",
+                        "ttsState" to "audio_focus_failed",
+                    ),
+                )
+            }
+            return
+        }
         if (!requestFocus()) {
             val retry = (focusRetries[text] ?: 0) + 1
             diagnosticsRepository?.update(
@@ -176,11 +194,14 @@ class YapeTextToSpeech(
             if (retry <= MAX_FOCUS_RETRIES) {
                 focusRetries[text] = retry
                 retryHandler.postDelayed({ speakNextIfNeeded() }, FOCUS_RETRY_DELAY_MS)
+            } else {
+                diagnosticsRepository?.update(mapOf("ttsState" to "audio_focus_failed"))
             }
             return
         }
         pending.removeFirst()
         focusRetries.remove(text)
+        focusRetries.remove("foreground:$text")
         speakNow(text)
     }
 

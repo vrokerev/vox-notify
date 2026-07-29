@@ -2,6 +2,10 @@ package com.victormeneses.yape_notifier.nativebridge
 
 import android.Manifest
 import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -11,6 +15,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
+import com.victormeneses.yape_notifier.MainActivity
 import com.victormeneses.yape_notifier.notifications.AllowedPackages
 import com.victormeneses.yape_notifier.notifications.AppReadMode
 import com.victormeneses.yape_notifier.notifications.AppSelection
@@ -86,13 +91,17 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
                 result.success(AppLabelResolver.labelFor(context.applicationContext, packageName))
             }
             "getAvailableApps" -> result.success(
-                AppLabelResolver.visibleLauncherApps(context.applicationContext, appSelectionRepository)
+                availableApps()
                     .map { it.toMap() },
             )
             "updateAppSelection" -> {
                 val packageName = call.argument<String>("packageName")
                 if (packageName.isNullOrBlank()) {
                     result.error("invalid_package", "packageName is required", null)
+                    return
+                }
+                if (packageName == context.packageName) {
+                    result.error("invalid_package", "VoxNotify cannot be selected", null)
                     return
                 }
                 val enabled = call.argument<Boolean>("enabled") ?: false
@@ -152,6 +161,10 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
                 openXiaomiAutostartSettings()
                 result.success(null)
             }
+            "runListenerProbe" -> {
+                publishListenerProbe()
+                result.success(mapOf("posted" to true, "notificationId" to LISTENER_PROBE_ID))
+            }
             "runDebugPayload" -> result.success(runDebugPayload(call.argument<String>("text").orEmpty()))
             else -> result.notImplemented()
         }
@@ -189,6 +202,18 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
         return diagnostics
     }
 
+    private fun availableApps(): List<AppSelection> {
+        val yapeInstalled = AppLabelResolver.isInstalled(context.applicationContext, AllowedPackages.YAPE_PACKAGE)
+        val yapeLabel = if (yapeInstalled) {
+            val resolved = AppLabelResolver.labelFor(context.applicationContext, AllowedPackages.YAPE_PACKAGE)
+            if (resolved == AllowedPackages.YAPE_PACKAGE) "Yape" else resolved
+        } else {
+            "Yape no encontrada"
+        }
+        appSelectionRepository.reconcileKnownYapeInstallation(yapeInstalled, yapeLabel)
+        return AppLabelResolver.visibleLauncherApps(context.applicationContext, appSelectionRepository)
+    }
+
     private fun settingsWithRuntimeState(): Map<String, Any> =
         settingsRepository.get().toMap() +
             mapOf(
@@ -224,7 +249,7 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
     private fun runDebugPayload(text: String): Map<String, Any?> {
         val now = System.currentTimeMillis()
         val payload = NotificationPayload(
-            packageName = AllowedPackages.TEST_SENDER_PACKAGE,
+            packageName = AllowedPackages.YAPE_PACKAGE,
             notificationKey = "flutter-debug-$now",
             notificationId = now.toInt(),
             postTime = now,
@@ -237,7 +262,16 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
             textLines = emptyList(),
         )
         val processor = NotificationProcessor(
-            appSelectionRepository.getEnabledMap(),
+            mapOf(
+                AllowedPackages.YAPE_PACKAGE to AppSelection(
+                    packageName = AllowedPackages.YAPE_PACKAGE,
+                    label = "Yape",
+                    enabled = true,
+                    readMode = AppReadMode.SMART_YAPE,
+                    detected = false,
+                    installed = true,
+                ),
+            ),
             NotificationDeduplicator(TimeProvider { now }),
         )
         val processed = processor.process(payload)
@@ -258,6 +292,50 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
         }
     }
 
+    private fun publishListenerProbe() {
+        val notificationManager = context.getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            notificationManager.createNotificationChannel(
+                NotificationChannel(
+                    LISTENER_PROBE_CHANNEL_ID,
+                    "Prueba de listener",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ),
+            )
+        }
+        val openIntent = PendingIntent.getActivity(
+            context,
+            7,
+            Intent(context, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(context, LISTENER_PROBE_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(context)
+        }
+        val now = System.currentTimeMillis()
+        diagnosticsRepository.update(
+            mapOf(
+                "listenerProbePostedAt" to now.toString(),
+                "listenerProbeReceivedAt" to "",
+                "listenerProbeResult" to "posted_waiting_for_listener",
+            ),
+        )
+        notificationManager.notify(
+            LISTENER_PROBE_TAG,
+            LISTENER_PROBE_ID,
+            builder
+                .setSmallIcon(com.victormeneses.yape_notifier.R.drawable.ic_stat_voxnotify)
+                .setContentTitle(LISTENER_PROBE_TITLE)
+                .setContentText("Prueba real del NotificationListenerService")
+                .setContentIntent(openIntent)
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
     companion object {
         const val CHANNEL_NAME = "yape_notifier/native"
         const val EVENT_CHANNEL_NAME = "voxnotify/events"
@@ -265,6 +343,10 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
         private const val LISTENER_CONNECTION_STALE_MS = 10 * 60 * 1000L
         private const val LAST_CALLBACK_STALE_MS = 24 * 60 * 60 * 1000L
         private const val FOREGROUND_HEARTBEAT_STALE_MS = 45 * 1000L
+        const val LISTENER_PROBE_CHANNEL_ID = "voxnotify_listener_probe"
+        const val LISTENER_PROBE_TAG = "voxnotify-listener-probe"
+        const val LISTENER_PROBE_TITLE = "VoxNotify listener probe"
+        const val LISTENER_PROBE_ID = 4203
     }
 }
 
@@ -292,4 +374,6 @@ private fun AppSelection.toMap(): Map<String, Any> =
         "enabled" to enabled,
         "readMode" to readMode.name,
         "detected" to detected,
+        "installed" to installed,
+        "userProfile" to userProfile,
     )
