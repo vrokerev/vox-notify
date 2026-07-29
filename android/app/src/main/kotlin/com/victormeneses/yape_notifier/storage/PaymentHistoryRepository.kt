@@ -21,20 +21,39 @@ class PaymentHistoryRepository(private val store: KeyValueStore, private val max
 
     private fun serialize(records: List<PaymentRecord>): String =
         records.joinToString("\n") {
-            listOf(it.timestamp.toString(), it.amount, it.spokenText, it.source).joinToString("\t") { value ->
+            listOf(
+                it.timestamp.toString(),
+                it.amount,
+                it.sender.orEmpty(),
+                it.spokenText,
+                it.source,
+                it.announced.toString(),
+            ).joinToString("\t") { value ->
                 escape(value)
             }
         }
 
     private fun deserializeRecord(line: String): PaymentRecord? {
         val parts = splitEscaped(line)
-        if (parts.size != 4) return null
-        return PaymentRecord(
-            timestamp = parts[0].toLongOrNull() ?: return null,
-            amount = parts[1],
-            spokenText = parts[2],
-            source = parts[3],
-        )
+        return when (parts.size) {
+            4 -> PaymentRecord(
+                timestamp = parts[0].toLongOrNull() ?: return null,
+                amount = parts[1],
+                sender = null,
+                spokenText = parts[2],
+                source = parts[3],
+                announced = true,
+            )
+            6 -> PaymentRecord(
+                timestamp = parts[0].toLongOrNull() ?: return null,
+                amount = parts[1],
+                sender = parts[2].ifBlank { null },
+                spokenText = parts[3],
+                source = parts[4],
+                announced = parts[5].toBooleanStrictOrNull() ?: true,
+            )
+            else -> null
+        }
     }
 
     private fun escape(value: String): String =

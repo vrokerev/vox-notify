@@ -16,6 +16,7 @@ import com.victormeneses.yape_notifier.storage.NativeSettingsRepository
 import com.victormeneses.yape_notifier.storage.PaymentHistoryRepository
 import com.victormeneses.yape_notifier.storage.SharedPreferencesStore
 import com.victormeneses.yape_notifier.notifications.PaymentRecord
+import com.victormeneses.yape_notifier.storage.AppSelectionRepository
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -38,10 +39,19 @@ class AndroidIntegrationTest {
     fun historyLimitAndClearUseSharedPreferences() {
         val repo = PaymentHistoryRepository(SharedPreferencesStore(context))
         repo.clear()
-        repeat(105) { repo.add(PaymentRecord(it.toLong(), "$it.00", "speech", "test")) }
+        repeat(105) { repo.add(PaymentRecord(it.toLong(), "$it.00", null, "speech", "test", true)) }
         assertEquals(100, repo.get().size)
         repo.clear()
         assertTrue(repo.get().isEmpty())
+    }
+
+    @Test
+    fun appSelectionsPersistDetectedAppsDisabled() {
+        val repo = AppSelectionRepository(SharedPreferencesStore(context))
+        repo.registerDetected("com.example.detected", "Detectada")
+        val app = repo.getAll().first { it.packageName == "com.example.detected" }
+        assertEquals(false, app.enabled)
+        assertEquals("Detectada", app.label)
     }
 
     @Test

@@ -15,15 +15,16 @@ class YapeNotificationProcessor(
         if (YapeNotificationClassifier.hasNegativeExpression(normalizedText)) {
             return NotificationProcessingResult.Ignored(IgnoreReason.NEGATIVE_EXPRESSION)
         }
+        val amount = YapeAmountParser.parse(normalizedText)
+            ?: return NotificationProcessingResult.Ignored(IgnoreReason.AMOUNT_NOT_FOUND)
         if (!YapeNotificationClassifier.isReceivedPayment(normalizedText)) {
             return NotificationProcessingResult.Ignored(IgnoreReason.NOT_A_RECEIVED_PAYMENT)
         }
-        val amount = YapeAmountParser.parse(normalizedText)
-            ?: return NotificationProcessingResult.Ignored(IgnoreReason.AMOUNT_NOT_FOUND)
-        val (isNew, dedupKey) = deduplicator.markIfNew(payload, amount, normalizedText)
+        val sender = YapeSenderParser.parse(NotificationTextExtractor.originalFromPayload(payload))
+        val (isNew, dedupKey) = deduplicator.markIfNew(payload, amount, normalizedText, sender)
         if (!isNew) {
             return NotificationProcessingResult.Ignored(IgnoreReason.DUPLICATE)
         }
-        return NotificationProcessingResult.PaymentReceived(amount, normalizedText, dedupKey)
+        return NotificationProcessingResult.PaymentReceived(amount, sender, normalizedText, dedupKey)
     }
 }

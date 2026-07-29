@@ -7,15 +7,19 @@ import android.os.Build
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import com.victormeneses.yape_notifier.notifications.AllowedPackages
+import com.victormeneses.yape_notifier.notifications.AppReadMode
+import com.victormeneses.yape_notifier.notifications.AppSelection
 import com.victormeneses.yape_notifier.notifications.NativeSettings
 import com.victormeneses.yape_notifier.notifications.NotificationDeduplicator
 import com.victormeneses.yape_notifier.notifications.NotificationPayload
+import com.victormeneses.yape_notifier.notifications.NotificationProcessor
 import com.victormeneses.yape_notifier.notifications.NotificationProcessingResult
 import com.victormeneses.yape_notifier.notifications.PaymentRecord
 import com.victormeneses.yape_notifier.notifications.TimeProvider
-import com.victormeneses.yape_notifier.notifications.YapeNotificationProcessor
 import com.victormeneses.yape_notifier.notifications.YapeSpeechFormatter
 import com.victormeneses.yape_notifier.notifications.YapeNotificationListenerService
+import com.victormeneses.yape_notifier.storage.AppSelectionRepository
+import com.victormeneses.yape_notifier.storage.ListenerDiagnosticsRepository
 import com.victormeneses.yape_notifier.speech.YapeTextToSpeech
 import com.victormeneses.yape_notifier.storage.NativeSettingsRepository
 import com.victormeneses.yape_notifier.storage.PaymentHistoryRepository
@@ -28,6 +32,8 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
     private val store = SharedPreferencesStore(context.applicationContext)
     private val settingsRepository = NativeSettingsRepository(store)
     private val historyRepository = PaymentHistoryRepository(store)
+    private val appSelectionRepository = AppSelectionRepository(store)
+    private val diagnosticsRepository = ListenerDiagnosticsRepository(store)
     private val speech by lazy { YapeTextToSpeech(context.applicationContext) }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -45,11 +51,28 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
             }
             "testSpeech" -> {
                 val settings = settingsRepository.get()
-                val phrase = YapeSpeechFormatter.phrase(BigDecimal("20.50"), settings.fullPhrase)
+                val phrase = YapeSpeechFormatter.phrase(BigDecimal("20.50"), "María López", settings.fullPhrase)
                 if (settings.voiceEnabled) speech.speak(phrase)
                 result.success(phrase)
             }
             "getHistory" -> result.success(historyRepository.get().map { it.toMap() })
+            "getListenerDiagnostics" -> result.success(diagnosticsRepository.get())
+            "getAvailableApps" -> result.success(
+                AppLabelResolver.visibleLauncherApps(context.applicationContext, appSelectionRepository)
+                    .map { it.toMap() },
+            )
+            "updateAppSelection" -> {
+                val packageName = call.argument<String>("packageName")
+                if (packageName.isNullOrBlank()) {
+                    result.error("invalid_package", "packageName is required", null)
+                    return
+                }
+                val enabled = call.argument<Boolean>("enabled") ?: false
+                val readMode = call.argument<String>("readMode")
+                    ?.let { runCatching { AppReadMode.valueOf(it) }.getOrNull() }
+                val label = call.argument<String>("label")
+                result.success(appSelectionRepository.update(packageName, enabled, readMode, label).toMap())
+            }
             "clearHistory" -> {
                 historyRepository.clear()
                 result.success(null)
@@ -77,20 +100,26 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
             bigText = null,
             subText = null,
             infoText = null,
+            summaryText = null,
             textLines = emptyList(),
         )
-        val processor = YapeNotificationProcessor(
-            AllowedPackages.current(),
+        val processor = NotificationProcessor(
+            appSelectionRepository.getEnabledMap(),
             NotificationDeduplicator(TimeProvider { now }),
         )
         val processed = processor.process(payload)
         return when (processed) {
             is NotificationProcessingResult.PaymentReceived -> {
                 val settings = settingsRepository.get()
-                val phrase = YapeSpeechFormatter.phrase(processed.amount, settings.fullPhrase)
-                historyRepository.add(PaymentRecord(now, processed.amount.toPlainString(), phrase, "debug"))
+                val phrase = YapeSpeechFormatter.phrase(processed.amount, processed.sender, settings.fullPhrase)
+                historyRepository.add(PaymentRecord(now, processed.amount.toPlainString(), processed.sender, phrase, "debug", settings.voiceEnabled))
                 if (settings.voiceEnabled) speech.speak(phrase)
-                mapOf("accepted" to true, "amount" to processed.amount.toPlainString(), "speech" to phrase)
+                mapOf("accepted" to true, "amount" to processed.amount.toPlainString(), "sender" to processed.sender, "speech" to phrase)
+            }
+            is NotificationProcessingResult.SpokenNotification -> {
+                historyRepository.add(PaymentRecord(now, "", null, processed.spokenText, processed.appLabel, settingsRepository.get().voiceEnabled))
+                if (settingsRepository.get().voiceEnabled) speech.speak(processed.spokenText)
+                mapOf("accepted" to true, "speech" to processed.spokenText)
             }
             is NotificationProcessingResult.Ignored -> mapOf("accepted" to false, "reason" to processed.reason.name)
         }
@@ -105,4 +134,20 @@ private fun NativeSettings.toMap(): Map<String, Any> =
     mapOf("voiceEnabled" to voiceEnabled, "fullPhrase" to fullPhrase)
 
 private fun PaymentRecord.toMap(): Map<String, Any> =
-    mapOf("timestamp" to timestamp, "amount" to amount, "spokenText" to spokenText, "source" to source)
+    mapOf(
+        "timestamp" to timestamp,
+        "amount" to amount,
+        "sender" to sender.orEmpty(),
+        "spokenText" to spokenText,
+        "source" to source,
+        "announced" to announced,
+    )
+
+private fun AppSelection.toMap(): Map<String, Any> =
+    mapOf(
+        "packageName" to packageName,
+        "label" to label,
+        "enabled" to enabled,
+        "readMode" to readMode.name,
+        "detected" to detected,
+    )

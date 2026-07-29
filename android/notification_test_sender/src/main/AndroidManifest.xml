@@ -3,7 +3,7 @@
 
     <application
         android:theme="@style/AppTheme"
-        android:label="Yape Notifier Test Sender"
+        android:label="VoxNotify Test Sender"
         android:icon="@android:drawable/ic_dialog_info">
         <activity
             android:name=".MainActivity"

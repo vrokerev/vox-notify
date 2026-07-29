@@ -21,8 +21,33 @@ void main() {
                 {
                   'timestamp': 1,
                   'amount': '20.00',
-                  'spokenText': 'Yape recibido. 20 soles.',
+                  'sender': 'VICTOR MANUEL MENESES',
+                  'spokenText':
+                      'VICTOR MANUEL MENESES te envió 20 soles por Yape.',
                   'source': 'debug',
+                  'announced': true,
+                },
+              ];
+            case 'getListenerDiagnostics':
+              return {
+                'listenerConnected': 'true',
+                'lastPackage': 'com.bcp.innovacxion.yapeapp',
+              };
+            case 'getAvailableApps':
+              return [
+                {
+                  'packageName': 'com.bcp.innovacxion.yapeapp',
+                  'label': 'Yape',
+                  'enabled': true,
+                  'readMode': 'SMART_YAPE',
+                  'detected': false,
+                },
+                {
+                  'packageName': 'com.mail.test',
+                  'label': 'Correo',
+                  'enabled': false,
+                  'readMode': 'TITLE_AND_CONTENT',
+                  'detected': true,
                 },
               ];
             case 'requestListenerRebind':
@@ -30,8 +55,9 @@ void main() {
             case 'openNotificationAccessSettings':
               return null;
             case 'testSpeech':
-              return 'Yape recibido. 20 soles con 50 céntimos.';
+              return 'María López te envió 20 soles con 50 céntimos por Yape.';
             case 'updateSettings':
+            case 'updateAppSelection':
               return call.arguments;
             case 'runDebugPayload':
               return {
@@ -53,10 +79,16 @@ void main() {
     await tester.pumpWidget(const YapeNotifierApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('Yape Notifier'), findsOneWidget);
+    expect(find.text('VoxNotify'), findsOneWidget);
     expect(find.text('Acceso habilitado'), findsOneWidget);
     expect(find.text('Voz activa'), findsOneWidget);
-    expect(find.text('Decir frase completa'), findsOneWidget);
+    expect(find.text('Modo de lectura de Yape'), findsOneWidget);
+    expect(find.text('Aplicaciones para leer'), findsOneWidget);
+    expect(find.text('Yape'), findsWidgets);
+    expect(find.text('Aplicaciones detectadas'), findsOneWidget);
+    await tester.drag(find.byType(Scrollable), const Offset(0, -500));
+    await tester.pumpAndSettle();
+    expect(find.text('VICTOR MANUEL MENESES'), findsOneWidget);
     expect(find.text('S/ 20.00'), findsOneWidget);
     await tester.drag(find.byType(Scrollable), const Offset(0, -600));
     await tester.pumpAndSettle();

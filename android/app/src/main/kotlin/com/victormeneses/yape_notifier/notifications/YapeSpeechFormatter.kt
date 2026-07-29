@@ -4,9 +4,15 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 
 object YapeSpeechFormatter {
-    fun phrase(amount: BigDecimal, fullPhrase: Boolean): String {
+    fun phrase(amount: BigDecimal, sender: String?, includeSender: Boolean): String {
         val amountText = amountText(amount)
-        return if (fullPhrase) "Yape recibido. $amountText." else amountText
+        if (!includeSender) return "$amountText."
+        val cleanSender = sender?.takeIf { it.isNotBlank() }
+        return if (cleanSender != null) {
+            "$cleanSender te envió $amountText por Yape."
+        } else {
+            "Recibiste $amountText por Yape."
+        }
     }
 
     fun amountText(amount: BigDecimal): String {

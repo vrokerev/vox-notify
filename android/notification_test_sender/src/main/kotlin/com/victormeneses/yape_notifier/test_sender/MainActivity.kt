@@ -27,7 +27,7 @@ class MainActivity : Activity() {
             setPadding(28, 32, 28, 32)
         }
         root.addView(TextView(this).apply {
-            text = "Yape Notifier Test Sender"
+            text = "VoxNotify Test Sender"
             textSize = 22f
         })
         scenarios().forEach { scenario ->
@@ -40,6 +40,11 @@ class MainActivity : Activity() {
     }
 
     private fun scenarios(): List<Scenario> = listOf(
+        Scenario(
+            label = "Yape real VICTOR S/ 1",
+            title = "Confirmación de Pago",
+            text = "Yape! VICTOR MANUEL MENESES te envió un pago por S/ 1",
+        ),
         Scenario("Pago recibido S/ 20", "Recibiste un Yape de S/ 20"),
         Scenario("Pago recibido S/ 25.50", "Te yapearon S/25.50"),
         Scenario("Pago recibido S/ 1.01", "Has recibido S/ 1.01"),

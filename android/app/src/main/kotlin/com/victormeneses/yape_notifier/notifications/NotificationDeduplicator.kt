@@ -8,10 +8,19 @@ class NotificationDeduplicator(
 ) {
     private val seen = linkedMapOf<String, Long>()
 
-    fun markIfNew(payload: NotificationPayload, amount: BigDecimal, normalizedText: String): Pair<Boolean, String> {
+    fun markIfNew(payload: NotificationPayload, amount: BigDecimal, normalizedText: String, sender: String? = null): Pair<Boolean, String> {
         val now = timeProvider.currentTimeMillis()
         prune(now)
-        val key = "${payload.packageName}|${payload.notificationKey}|${payload.notificationId}|${amount.toPlainString()}|${normalizedText.hashCode()}"
+        val key = "${payload.packageName}|${payload.notificationKey}|${payload.notificationId}|${amount.toPlainString()}|${sender.orEmpty()}|${normalizedText.hashCode()}"
+        if (seen.containsKey(key)) return false to key
+        seen[key] = now
+        return true to key
+    }
+
+    fun markTextIfNew(payload: NotificationPayload, normalizedText: String): Pair<Boolean, String> {
+        val now = timeProvider.currentTimeMillis()
+        prune(now)
+        val key = "${payload.packageName}|${payload.notificationKey}|${payload.notificationId}|${normalizedText.hashCode()}"
         if (seen.containsKey(key)) return false to key
         seen[key] = now
         return true to key

@@ -1,6 +1,7 @@
 package com.victormeneses.yape_notifier.notifications
 
 import com.victormeneses.yape_notifier.storage.InMemoryKeyValueStore
+import com.victormeneses.yape_notifier.storage.AppSelectionRepository
 import com.victormeneses.yape_notifier.storage.NativeSettingsRepository
 import com.victormeneses.yape_notifier.storage.PaymentHistoryRepository
 import org.junit.Assert.assertEquals
@@ -58,7 +59,25 @@ class NotificationLogicTest {
             "Has recibido S/. 1,20",
             "Nuevo Yape: 100 soles",
             "Yape recibido S/ 2",
+            "Confirmación de Pago Yape! VICTOR MANUEL MENESES te envió un pago por S/ 1",
+            "Carlos te yapeó S/ 15",
         ).forEach { assertTrue(YapeNotificationClassifier.isReceivedPayment(it)) }
+    }
+
+    @Test
+    fun senderParserExtractsRealYapeFormats() {
+        mapOf(
+            "Yape! VICTOR MANUEL MENESES te envió un pago por S/ 1" to "VICTOR MANUEL MENESES",
+            "Yape! María López te envió un pago por S/ 25.50" to "María López",
+            "Yape! José Pérez te envió un pago por S/ 1,20" to "José Pérez",
+            "Confirmación de Pago - ANA MARÍA RAMOS te envió un pago por S/ 100" to "ANA MARÍA RAMOS",
+            "Carlos te envió un pago por S/1" to "Carlos",
+            "Recibiste S/ 20 de Carlos Ramírez" to "Carlos Ramírez",
+            "Carlos te yapeó S/ 15" to "Carlos",
+            "Nuevo Yape de Ana Torres por S/ 10" to "Ana Torres",
+        ).forEach { (text, expected) ->
+            assertEquals(expected, YapeSenderParser.parse(text))
+        }
     }
 
     @Test
@@ -83,11 +102,56 @@ class NotificationLogicTest {
             "Pagaste S/ 15" to IgnoreReason.NEGATIVE_EXPRESSION,
             "Promoción: gana S/ 100" to IgnoreReason.NEGATIVE_EXPRESSION,
             "Operación rechazada por S/ 25" to IgnoreReason.NEGATIVE_EXPRESSION,
-            "Tu código es 123456" to IgnoreReason.NOT_A_RECEIVED_PAYMENT,
+            "Tu código es 123456" to IgnoreReason.AMOUNT_NOT_FOUND,
             "Recibiste dinero a las 10:30" to IgnoreReason.AMOUNT_NOT_FOUND,
         ).forEach { (text, reason) ->
             val result = processor.process(payload(text = text, key = text))
             assertEquals(NotificationProcessingResult.Ignored(reason), result)
+        }
+    }
+
+    @Test
+    fun processorAcceptsRealYapeNotificationWithSender() {
+        val result = processor().process(
+            payload(
+                key = "real-yape-1",
+                title = "Confirmación de Pago",
+                text = "Yape! VICTOR MANUEL MENESES te envió un pago por S/ 1",
+            ),
+        )
+        assertTrue(result is NotificationProcessingResult.PaymentReceived)
+        result as NotificationProcessingResult.PaymentReceived
+        assertEquals(BigDecimal("1.00"), result.amount)
+        assertEquals("VICTOR MANUEL MENESES", result.sender)
+        assertEquals(
+            "VICTOR MANUEL MENESES te envió 1 sol por Yape.",
+            YapeSpeechFormatter.phrase(result.amount, result.sender, true),
+        )
+    }
+
+    @Test
+    fun processorAcceptsRealVariantsAndRejectsOutgoingOrNoise() {
+        mapOf(
+            "Yape! María López te envió un pago por S/ 25.50" to "María López",
+            "Yape! José Pérez te envió un pago por S/ 1,20" to "José Pérez",
+            "Confirmación de Pago - ANA MARÍA RAMOS te envió un pago por S/ 100" to "ANA MARÍA RAMOS",
+            "Carlos te envió un pago por S/1" to "Carlos",
+            "Recibiste S/ 20 de Carlos" to "Carlos",
+            "Carlos te yapeó S/ 15" to "Carlos",
+        ).forEach { (text, sender) ->
+            val result = processor().process(payload(text = text, key = text))
+            assertTrue(result is NotificationProcessingResult.PaymentReceived)
+            result as NotificationProcessingResult.PaymentReceived
+            assertEquals(sender, result.sender)
+        }
+
+        listOf(
+            "Yape! Enviaste un pago por S/ 20",
+            "Pago realizado por S/ 20",
+            "Promoción: gana S/ 100",
+            "Operación rechazada por S/ 20",
+        ).forEach { text ->
+            assertTrue(processor().process(payload(text = text, key = text)) is NotificationProcessingResult.Ignored)
         }
     }
 
@@ -134,17 +198,19 @@ class NotificationLogicTest {
 
     @Test
     fun speechFormatterHandlesSingularAndPlural() {
-        assertEquals("Yape recibido. 1 sol.", YapeSpeechFormatter.phrase(BigDecimal("1.00"), true))
-        assertEquals("2 soles.", YapeSpeechFormatter.phrase(BigDecimal("2.00"), true).removePrefix("Yape recibido. "))
-        assertEquals("1 sol con 1 céntimo", YapeSpeechFormatter.phrase(BigDecimal("1.01"), false))
-        assertEquals("25 soles con 50 céntimos", YapeSpeechFormatter.phrase(BigDecimal("25.50"), false))
+        assertEquals("VICTOR MANUEL MENESES te envió 1 sol por Yape.", YapeSpeechFormatter.phrase(BigDecimal("1.00"), "VICTOR MANUEL MENESES", true))
+        assertEquals("María López te envió 25 soles con 50 céntimos por Yape.", YapeSpeechFormatter.phrase(BigDecimal("25.50"), "María López", true))
+        assertEquals("Recibiste 20 soles por Yape.", YapeSpeechFormatter.phrase(BigDecimal("20.00"), null, true))
+        assertEquals("20 soles.", YapeSpeechFormatter.phrase(BigDecimal("20.00"), "Carlos", false))
+        assertEquals("1 sol con 1 céntimo", YapeSpeechFormatter.amountText(BigDecimal("1.01")))
+        assertEquals("25 soles con 50 céntimos", YapeSpeechFormatter.amountText(BigDecimal("25.50")))
     }
 
     @Test
     fun historyPersistsMostRecentHundredAndClears() {
         val repo = PaymentHistoryRepository(InMemoryKeyValueStore())
         repeat(105) {
-            repo.add(PaymentRecord(it.toLong(), "$it.00", "Yape recibido. $it soles.", "test"))
+            repo.add(PaymentRecord(it.toLong(), "$it.00", null, "Yape recibido. $it soles.", "test", true))
         }
         assertEquals(100, repo.get().size)
         assertEquals("104.00", repo.get().first().amount)
@@ -171,6 +237,47 @@ class NotificationLogicTest {
         assertTrue(result.normalizedText.contains("Recibiste"))
     }
 
+    @Test
+    fun genericProcessorReadsOnlySelectedAppsAndBlocksSensitiveText() {
+        val selected = AppSelection(
+            packageName = "com.chat.test",
+            label = "Chat",
+            enabled = true,
+            readMode = AppReadMode.TITLE_AND_CONTENT,
+            detected = true,
+        )
+        val processor = NotificationProcessor(
+            mapOf(selected.packageName to selected),
+            NotificationDeduplicator(TimeProvider { 1_000L }),
+        )
+
+        val spoken = processor.process(
+            payload(packageName = "com.chat.test", title = "María", text = "llego en diez minutos"),
+        )
+        assertTrue(spoken is NotificationProcessingResult.SpokenNotification)
+        spoken as NotificationProcessingResult.SpokenNotification
+        assertEquals("Chat. María: llego en diez minutos", spoken.spokenText)
+
+        assertEquals(
+            NotificationProcessingResult.Ignored(IgnoreReason.APP_NOT_SELECTED),
+            processor.process(payload(packageName = "com.other", title = "Otro", text = "hola")),
+        )
+        assertEquals(
+            NotificationProcessingResult.Ignored(IgnoreReason.PRIVACY_FILTERED),
+            processor.process(payload(packageName = "com.chat.test", title = "OTP", text = "código de verificación 123456", key = "sensitive")),
+        )
+    }
+
+    @Test
+    fun appSelectionRepositoryRegistersDetectedAppsDisabled() {
+        val repo = AppSelectionRepository(InMemoryKeyValueStore())
+        repo.registerDetected("com.bank.test", "Banco")
+        val app = repo.getAll().first { it.packageName == "com.bank.test" }
+        assertEquals("Banco", app.label)
+        assertFalse(app.enabled)
+        assertEquals(AppReadMode.TITLE_AND_CONTENT, app.readMode)
+    }
+
     private fun processor(): YapeNotificationProcessor =
         YapeNotificationProcessor(
             setOf(AllowedPackages.YAPE_PACKAGE),
@@ -195,6 +302,7 @@ class NotificationLogicTest {
             bigText = bigText,
             subText = null,
             infoText = null,
+            summaryText = null,
             textLines = textLines,
         )
 
