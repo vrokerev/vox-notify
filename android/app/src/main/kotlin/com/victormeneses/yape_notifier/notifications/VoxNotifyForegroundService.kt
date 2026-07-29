@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import com.victormeneses.yape_notifier.MainActivity
+import com.victormeneses.yape_notifier.R
 import com.victormeneses.yape_notifier.storage.ListenerDiagnosticsRepository
 import com.victormeneses.yape_notifier.storage.NativeSettingsRepository
 import com.victormeneses.yape_notifier.storage.SharedPreferencesStore
@@ -111,7 +112,7 @@ class VoxNotifyForegroundService : Service() {
             Notification.Builder(this)
         }
         return builder
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_stat_voxnotify)
             .setContentTitle("VoxNotify está activo")
             .setContentText("Escuchando las aplicaciones seleccionadas")
             .setContentIntent(openIntent)

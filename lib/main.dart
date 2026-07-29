@@ -5,11 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 void main() {
-  runApp(const YapeNotifierApp());
+  runApp(const VoxNotifyApp());
 }
 
-class YapeNotifierApp extends StatelessWidget {
-  const YapeNotifierApp({super.key});
+class VoxNotifyApp extends StatelessWidget {
+  const VoxNotifyApp({super.key});
 
   @override
   Widget build(BuildContext context) {

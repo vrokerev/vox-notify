@@ -1,6 +1,8 @@
 # Miscellaneous
 *.class
 *.log
+*.keystore
+*.jks
 *.pyc
 *.swp
 .DS_Store
@@ -32,6 +34,15 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+releases/*.apk
+releases/*.tmp
+
+# Local Android configuration and secrets
+android/.gradle/
+android/local.properties
+android/key.properties
+local.properties
+key.properties
 
 # Symbolication related
 app.*.symbols
