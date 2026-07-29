@@ -5,6 +5,7 @@ class ListenerDiagnosticsRepository(private val store: KeyValueStore) {
         values.forEach { (key, value) ->
             store.putString("$KEY_PREFIX$key", value.orEmpty())
         }
+        VoxNotifyEventBus.emit("diagnostics_changed")
     }
 
     fun get(): Map<String, String> =
@@ -25,8 +26,13 @@ class ListenerDiagnosticsRepository(private val store: KeyValueStore) {
             "lastTtsStartedAt",
             "lastTtsCompletedAt",
             "lastTtsError",
+            "lastAudioFocusResult",
+            "lastTtsFocusRetryAt",
             "lastSpokenText",
             "foregroundSpeechServiceRunning",
+            "foregroundServiceStartedAt",
+            "foregroundServiceStoppedAt",
+            "foregroundHeartbeatAt",
             "batteryOptimizationIgnored",
             "manufacturer",
             "appStandbyBucket",
@@ -37,6 +43,15 @@ class ListenerDiagnosticsRepository(private val store: KeyValueStore) {
             "lastAmount",
             "lastSender",
             "ttsState",
+            "lastYapePackageName",
+            "lastYapePostTime",
+            "lastYapeTitle",
+            "lastYapeText",
+            "lastYapeBigText",
+            "lastYapeSubText",
+            "lastYapeSummaryText",
+            "lastYapeTextLines",
+            "lastYapeParserResult",
         )
     }
 }

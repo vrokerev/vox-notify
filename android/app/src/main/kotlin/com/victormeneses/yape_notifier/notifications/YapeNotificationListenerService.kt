@@ -76,13 +76,15 @@ class YapeNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        val callbackAt = System.currentTimeMillis()
         diagnosticsRepository.update(
             mapOf(
-                "lastCallbackAt" to System.currentTimeMillis().toString(),
+                "lastCallbackAt" to callbackAt.toString(),
                 "lastCallbackPackage" to sbn.packageName,
                 "lastProcessingResult" to "callback_received",
             ),
         )
+        VoxNotifyEventBus.emit("notification_callback")
         val payload = NotificationTextExtractor.fromNotification(
             packageName = sbn.packageName,
             key = sbn.key,
@@ -90,6 +92,9 @@ class YapeNotificationListenerService : NotificationListenerService() {
             postTime = sbn.postTime,
             notification = sbn.notification,
         )
+        if (payload.packageName == AllowedPackages.YAPE_PACKAGE) {
+            diagnosticsRepository.update(yapeDebugFields(payload, "callback_received"))
+        }
         val detection = appSelectionRepository.registerDetected(
             payload.packageName,
             AppLabelResolver.labelFor(applicationContext, payload.packageName),
@@ -103,6 +108,11 @@ class YapeNotificationListenerService : NotificationListenerService() {
         val processor = NotificationProcessor(appSelectionRepository.getEnabledMap(), deduplicator)
         val result = processor.process(payload)
         diagnosticsRepository.update(mapOf("lastProcessingResult" to result.javaClass.simpleName))
+        if (payload.packageName == AllowedPackages.YAPE_PACKAGE) {
+            diagnosticsRepository.update(
+                mapOf("lastYapeParserResult" to processingSummary(result)),
+            )
+        }
         if (BuildConfig.DEBUG) {
             Log.d(
                 TAG,
@@ -135,6 +145,7 @@ class YapeNotificationListenerService : NotificationListenerService() {
             )
             if (settings.voiceEnabled) {
                 diagnosticsRepository.update(mapOf("lastTtsQueuedAt" to System.currentTimeMillis().toString()))
+                VoxNotifyEventBus.emit("tts_queued")
                 speech.speak(phrase)
             }
         } else if (result is NotificationProcessingResult.SpokenNotification) {
@@ -156,10 +167,11 @@ class YapeNotificationListenerService : NotificationListenerService() {
                         "lastTtsQueuedAt" to System.currentTimeMillis().toString(),
                     ),
                 )
+                VoxNotifyEventBus.emit("tts_queued")
                 speech.speak(result.spokenText)
             }
-        } else if (BuildConfig.DEBUG && result is NotificationProcessingResult.Ignored) {
-            Log.d(TAG, "ignored=${result.reason.name}")
+        } else if (result is NotificationProcessingResult.Ignored) {
+            if (BuildConfig.DEBUG) Log.d(TAG, "ignored=${result.reason.name}")
             diagnosticsRepository.update(
                 mapOf(
                     "lastNotificationAt" to System.currentTimeMillis().toString(),
@@ -170,6 +182,7 @@ class YapeNotificationListenerService : NotificationListenerService() {
                 ),
             )
         }
+        VoxNotifyEventBus.emit("notification_processed")
     }
 
     override fun onDestroy() {
@@ -214,4 +227,25 @@ class YapeNotificationListenerService : NotificationListenerService() {
             "summaryText".takeIf { !payload.summaryText.isNullOrBlank() },
             "textLines".takeIf { payload.textLines.isNotEmpty() },
         ).joinToString(",")
+
+    private fun yapeDebugFields(payload: NotificationPayload, parserResult: String): Map<String, String?> =
+        mapOf(
+            "lastYapePackageName" to payload.packageName,
+            "lastYapePostTime" to payload.postTime.toString(),
+            "lastYapeTitle" to payload.title.orEmpty(),
+            "lastYapeText" to payload.text.orEmpty(),
+            "lastYapeBigText" to payload.bigText.orEmpty(),
+            "lastYapeSubText" to payload.subText.orEmpty(),
+            "lastYapeSummaryText" to payload.summaryText.orEmpty(),
+            "lastYapeTextLines" to payload.textLines.joinToString(" | "),
+            "lastYapeParserResult" to parserResult,
+        )
+
+    private fun processingSummary(result: NotificationProcessingResult): String =
+        when (result) {
+            is NotificationProcessingResult.PaymentReceived ->
+                "payment_received amount=${result.amount.toPlainString()} sender=${result.sender.orEmpty()}"
+            is NotificationProcessingResult.SpokenNotification -> "spoken_notification"
+            is NotificationProcessingResult.Ignored -> "ignored:${result.reason.name}"
+        }
 }

@@ -8,7 +8,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import com.victormeneses.yape_notifier.MainActivity
 import com.victormeneses.yape_notifier.R
 import com.victormeneses.yape_notifier.storage.ListenerDiagnosticsRepository
@@ -19,6 +21,20 @@ import com.victormeneses.yape_notifier.storage.VoxNotifyEventBus
 class VoxNotifyForegroundService : Service() {
     private lateinit var diagnosticsRepository: ListenerDiagnosticsRepository
     private lateinit var settingsRepository: NativeSettingsRepository
+    private val heartbeatHandler = Handler(Looper.getMainLooper())
+    private val heartbeat = object : Runnable {
+        override fun run() {
+            val now = System.currentTimeMillis()
+            lastHeartbeatAt = now
+            diagnosticsRepository.update(
+                mapOf(
+                    "foregroundSpeechServiceRunning" to "true",
+                    "foregroundHeartbeatAt" to now.toString(),
+                ),
+            )
+            heartbeatHandler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -31,25 +47,31 @@ class VoxNotifyForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             settingsRepository.update(settingsRepository.get().copy(continuousBackground = false))
+            heartbeatHandler.removeCallbacks(heartbeat)
             diagnosticsRepository.update(
                 mapOf(
                     "foregroundSpeechServiceRunning" to "false",
+                    "foregroundServiceStoppedAt" to System.currentTimeMillis().toString(),
                     "lastProcessingResult" to "foreground_stop_action",
                 ),
             )
             running = false
+            lastHeartbeatAt = 0L
             VoxNotifyEventBus.emit("foreground_service_changed")
             stopSelf()
             return START_NOT_STICKY
         }
         if (intent == null && !settingsRepository.get().continuousBackground) {
+            heartbeatHandler.removeCallbacks(heartbeat)
             diagnosticsRepository.update(
                 mapOf(
                     "foregroundSpeechServiceRunning" to "false",
+                    "foregroundServiceStoppedAt" to System.currentTimeMillis().toString(),
                     "lastProcessingResult" to "foreground_sticky_ignored_pref_false",
                 ),
             )
             running = false
+            lastHeartbeatAt = 0L
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -66,12 +88,17 @@ class VoxNotifyForegroundService : Service() {
             throw error
         }
         running = true
+        lastHeartbeatAt = System.currentTimeMillis()
         diagnosticsRepository.update(
             mapOf(
                 "foregroundSpeechServiceRunning" to "true",
+                "foregroundServiceStartedAt" to lastHeartbeatAt.toString(),
+                "foregroundHeartbeatAt" to lastHeartbeatAt.toString(),
                 "lastProcessingResult" to "foreground_service_start",
             ),
         )
+        heartbeatHandler.removeCallbacks(heartbeat)
+        heartbeatHandler.postDelayed(heartbeat, HEARTBEAT_INTERVAL_MS)
         VoxNotifyEventBus.emit("foreground_service_changed")
         ListenerRebindScheduler(applicationContext, diagnosticsRepository).request("foreground_service_start")
         return START_STICKY
@@ -84,8 +111,15 @@ class VoxNotifyForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        diagnosticsRepository.update(mapOf("foregroundSpeechServiceRunning" to "false"))
+        heartbeatHandler.removeCallbacks(heartbeat)
+        diagnosticsRepository.update(
+            mapOf(
+                "foregroundSpeechServiceRunning" to "false",
+                "foregroundServiceStoppedAt" to System.currentTimeMillis().toString(),
+            ),
+        )
         running = false
+        lastHeartbeatAt = 0L
         VoxNotifyEventBus.emit("foreground_service_changed")
         super.onDestroy()
     }
@@ -136,7 +170,10 @@ class VoxNotifyForegroundService : Service() {
         private const val CHANNEL_ID = "voxnotify_background"
         private const val NOTIFICATION_ID = 4201
         private const val ACTION_STOP = "com.victormeneses.yape_notifier.STOP_BACKGROUND"
+        private const val HEARTBEAT_INTERVAL_MS = 15_000L
+        private const val HEARTBEAT_STALE_MS = 45_000L
         @Volatile private var running = false
+        @Volatile private var lastHeartbeatAt = 0L
 
         fun start(context: Context) {
             val intent = Intent(context, VoxNotifyForegroundService::class.java)
@@ -151,6 +188,7 @@ class VoxNotifyForegroundService : Service() {
             context.stopService(Intent(context, VoxNotifyForegroundService::class.java))
         }
 
-        fun isRunning(): Boolean = running
+        fun isRunning(): Boolean =
+            running && lastHeartbeatAt > 0L && System.currentTimeMillis() - lastHeartbeatAt <= HEARTBEAT_STALE_MS
     }
 }

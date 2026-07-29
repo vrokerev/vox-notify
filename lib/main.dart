@@ -235,6 +235,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await _channel.invokeMethod<void>('openBatteryOptimizationSettings');
   }
 
+  Future<void> _openXiaomiAutostartSettings() async {
+    await _channel.invokeMethod<void>('openXiaomiAutostartSettings');
+  }
+
   Future<void> _openSettings() async {
     await _channel.invokeMethod<void>('openNotificationAccessSettings');
   }
@@ -322,6 +326,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               onOpenBatterySettings: _openBatterySettings,
               onOpenBatteryOptimizationSettings:
                   _openBatteryOptimizationSettings,
+              onOpenXiaomiAutostartSettings: _openXiaomiAutostartSettings,
             ),
             const SizedBox(height: 12),
             _SettingsPanel(
@@ -500,6 +505,7 @@ class _StatusPanel extends StatelessWidget {
     required this.onOpenAppDetails,
     required this.onOpenBatterySettings,
     required this.onOpenBatteryOptimizationSettings,
+    required this.onOpenXiaomiAutostartSettings,
   });
 
   final bool access;
@@ -515,18 +521,23 @@ class _StatusPanel extends StatelessWidget {
   final VoidCallback onOpenAppDetails;
   final VoidCallback onOpenBatterySettings;
   final VoidCallback onOpenBatteryOptimizationSettings;
+  final VoidCallback onOpenXiaomiAutostartSettings;
 
   @override
   Widget build(BuildContext context) {
     final color = access ? Colors.green.shade700 : Colors.red.shade700;
-    final listenerConnected = diagnostics['listenerConnected'] == 'true';
+    final listenerLive = diagnostics['listenerLive'] == 'true';
+    final listenerFreshness = diagnostics['listenerFreshness'] ?? 'unknown';
+    final foregroundLive =
+        diagnostics['foregroundSpeechServiceActuallyRunning'] == 'true';
     final manufacturer = diagnostics['manufacturer']?.toLowerCase() ?? '';
     final isXiaomi =
         manufacturer.contains('xiaomi') ||
         manufacturer.contains('redmi') ||
         manufacturer.contains('poco');
     final backgroundMismatch =
-        continuousBackground && !continuousBackgroundRunning;
+        continuousBackground &&
+        !(foregroundLive || continuousBackgroundRunning);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -559,12 +570,16 @@ class _StatusPanel extends StatelessWidget {
             ),
             _StatusLine(
               label: 'Listener',
-              value: listenerConnected ? 'Conectado' : 'Desconectado',
+              value: listenerLive
+                  ? 'Conectado'
+                  : listenerFreshness == 'stale'
+                  ? 'Desactualizado'
+                  : 'Desconocido',
             ),
             _StatusLine(
               label: 'Lectura en segundo plano',
               value: continuousBackground
-                  ? continuousBackgroundRunning
+                  ? foregroundLive || continuousBackgroundRunning
                         ? 'Activa y corriendo'
                         : 'Activada, servicio detenido'
                   : 'Inactiva',
@@ -586,14 +601,44 @@ class _StatusPanel extends StatelessWidget {
             _StatusLine(
               label: 'Último evento',
               value: diagnostics['lastCallbackAt']?.isNotEmpty == true
-                  ? diagnostics['lastCallbackAt']!
+                  ? _formatTimestamp(diagnostics['lastCallbackAt']!)
                   : 'Sin eventos',
+            ),
+            _StatusLine(
+              label: 'Último paquete',
+              value: diagnostics['lastCallbackPackage']?.isNotEmpty == true
+                  ? diagnostics['lastCallbackPackage']!
+                  : 'Sin paquete',
+            ),
+            _StatusLine(
+              label: 'Resultado',
+              value: diagnostics['lastProcessingResult']?.isNotEmpty == true
+                  ? diagnostics['lastProcessingResult']!
+                  : 'Sin resultado',
+            ),
+            _StatusLine(
+              label: 'Último descarte',
+              value: diagnostics['lastDiscardReason']?.isNotEmpty == true
+                  ? diagnostics['lastDiscardReason']!
+                  : 'Sin descarte',
             ),
             _StatusLine(
               label: 'Última frase',
               value: diagnostics['lastSpokenText']?.isNotEmpty == true
                   ? diagnostics['lastSpokenText']!
                   : 'Sin frases',
+            ),
+            _StatusLine(
+              label: 'Audio focus',
+              value: diagnostics['lastAudioFocusResult']?.isNotEmpty == true
+                  ? diagnostics['lastAudioFocusResult']!
+                  : 'Sin intento',
+            ),
+            _StatusLine(
+              label: 'Etiqueta Yape',
+              value: diagnostics['yapePackageLabel']?.isNotEmpty == true
+                  ? diagnostics['yapePackageLabel']!
+                  : 'Sin resolver',
             ),
             const SizedBox(height: 8),
             if (backgroundMismatch) ...[
@@ -650,6 +695,11 @@ class _StatusPanel extends StatelessWidget {
                   icon: const Icon(Icons.power_settings_new),
                   label: const Text('Optimización'),
                 ),
+                OutlinedButton.icon(
+                  onPressed: onOpenXiaomiAutostartSettings,
+                  icon: const Icon(Icons.manage_accounts),
+                  label: const Text('Autoinicio'),
+                ),
               ],
             ),
             if (isXiaomi) ...[
@@ -662,6 +712,16 @@ class _StatusPanel extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _formatTimestamp(String raw) {
+    final millis = int.tryParse(raw);
+    if (millis == null || millis <= 0) return raw;
+    final date = DateTime.fromMillisecondsSinceEpoch(millis);
+    final hh = date.hour.toString().padLeft(2, '0');
+    final mm = date.minute.toString().padLeft(2, '0');
+    final ss = date.second.toString().padLeft(2, '0');
+    return '$hh:$mm:$ss';
   }
 }
 

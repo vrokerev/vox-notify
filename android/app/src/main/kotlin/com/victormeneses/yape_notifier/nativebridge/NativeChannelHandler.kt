@@ -81,6 +81,10 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
                 val powerManager = context.getSystemService(PowerManager::class.java)
                 result.success(powerManager.isIgnoringBatteryOptimizations(context.packageName))
             }
+            "getPackageLabel" -> {
+                val packageName = call.argument<String>("packageName").orEmpty()
+                result.success(AppLabelResolver.labelFor(context.applicationContext, packageName))
+            }
             "getAvailableApps" -> result.success(
                 AppLabelResolver.visibleLauncherApps(context.applicationContext, appSelectionRepository)
                     .map { it.toMap() },
@@ -144,6 +148,10 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
                 )
                 result.success(null)
             }
+            "openXiaomiAutostartSettings" -> {
+                openXiaomiAutostartSettings()
+                result.success(null)
+            }
             "runDebugPayload" -> result.success(runDebugPayload(call.argument<String>("text").orEmpty()))
             else -> result.notImplemented()
         }
@@ -162,8 +170,22 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
 
     private fun listenerDiagnostics(): Map<String, String> {
         val diagnostics = diagnosticsRepository.get().toMutableMap()
-        diagnostics["foregroundSpeechServiceActuallyRunning"] = VoxNotifyForegroundService.isRunning().toString()
+        val now = System.currentTimeMillis()
+        val listenerConnectedAt = diagnostics["listenerConnectedAt"].orEmpty().toLongOrNull() ?: 0L
+        val lastCallbackAt = diagnostics["lastCallbackAt"].orEmpty().toLongOrNull() ?: 0L
+        val foregroundHeartbeatAt = diagnostics["foregroundHeartbeatAt"].orEmpty().toLongOrNull() ?: 0L
+        val foregroundLive = VoxNotifyForegroundService.isRunning() ||
+            (foregroundHeartbeatAt > 0L && now - foregroundHeartbeatAt <= FOREGROUND_HEARTBEAT_STALE_MS)
+        val listenerLive = diagnostics["listenerConnected"] == "true" &&
+            listenerConnectedAt > 0L &&
+            now - listenerConnectedAt <= LISTENER_CONNECTION_STALE_MS
+        diagnostics["listenerLive"] = listenerLive.toString()
+        diagnostics["listenerFreshness"] = freshness(now, listenerConnectedAt, LISTENER_CONNECTION_STALE_MS)
+        diagnostics["lastCallbackFreshness"] = freshness(now, lastCallbackAt, LAST_CALLBACK_STALE_MS)
+        diagnostics["foregroundSpeechServiceActuallyRunning"] = foregroundLive.toString()
+        diagnostics["foregroundHeartbeatFreshness"] = freshness(now, foregroundHeartbeatAt, FOREGROUND_HEARTBEAT_STALE_MS)
         diagnostics["postNotificationsPermissionGranted"] = hasPostNotificationsPermission().toString()
+        diagnostics["yapePackageLabel"] = AppLabelResolver.labelFor(context.applicationContext, AllowedPackages.YAPE_PACKAGE)
         return diagnostics
     }
 
@@ -173,6 +195,31 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
                 "continuousBackgroundRunning" to VoxNotifyForegroundService.isRunning(),
                 "postNotificationsPermissionGranted" to hasPostNotificationsPermission(),
             )
+
+    private fun freshness(now: Long, timestamp: Long, staleAfter: Long): String =
+        when {
+            timestamp <= 0L -> "unknown"
+            now - timestamp <= staleAfter -> "fresh"
+            else -> "stale"
+        }
+
+    private fun openXiaomiAutostartSettings() {
+        val intents = listOf(
+            Intent().setClassName(
+                "com.miui.securitycenter",
+                "com.miui.permcenter.autostart.AutoStartManagementActivity",
+            ),
+            Intent().setClassName(
+                "com.miui.securitycenter",
+                "com.miui.powercenter.PowerSettings",
+            ),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:${context.packageName}")),
+        )
+        val intent = intents.firstOrNull {
+            runCatching { it.resolveActivity(context.packageManager) != null }.getOrDefault(false)
+        } ?: Intent(Settings.ACTION_SETTINGS)
+        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
 
     private fun runDebugPayload(text: String): Map<String, Any?> {
         val now = System.currentTimeMillis()
@@ -215,6 +262,9 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
         const val CHANNEL_NAME = "yape_notifier/native"
         const val EVENT_CHANNEL_NAME = "voxnotify/events"
         private const val POST_NOTIFICATIONS_REQUEST_CODE = 4202
+        private const val LISTENER_CONNECTION_STALE_MS = 10 * 60 * 1000L
+        private const val LAST_CALLBACK_STALE_MS = 24 * 60 * 60 * 1000L
+        private const val FOREGROUND_HEARTBEAT_STALE_MS = 45 * 1000L
     }
 }
 

@@ -5,10 +5,13 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.victormeneses.yape_notifier.BuildConfig
+import com.victormeneses.yape_notifier.notifications.VoxNotifyForegroundService
 import com.victormeneses.yape_notifier.storage.ListenerDiagnosticsRepository
 import java.util.Locale
 
@@ -23,6 +26,8 @@ class YapeTextToSpeech(
     private var ready = false
     private var failed = false
     private var speaking = false
+    private val retryHandler = Handler(Looper.getMainLooper())
+    private val focusRetries = mutableMapOf<String, Int>()
     private val audioAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -127,6 +132,8 @@ class YapeTextToSpeech(
 
     fun stop() {
         pending.clear()
+        retryHandler.removeCallbacksAndMessages(null)
+        focusRetries.clear()
         tts.stop()
     }
 
@@ -152,16 +159,28 @@ class YapeTextToSpeech(
 
     private fun speakNextIfNeeded() {
         if (!ready || speaking || pending.isEmpty()) return
-        val text = pending.removeFirst()
+        if (appContext.applicationInfo.targetSdkVersion >= 35 && !VoxNotifyForegroundService.isRunning()) {
+            VoxNotifyForegroundService.start(appContext)
+            diagnosticsRepository?.update(mapOf("ttsState" to "foreground_start_before_focus"))
+        }
+        val text = pending.first()
         if (!requestFocus()) {
+            val retry = (focusRetries[text] ?: 0) + 1
             diagnosticsRepository?.update(
                 mapOf(
                     "lastTtsError" to "audio_focus_denied",
+                    "lastTtsFocusRetryAt" to System.currentTimeMillis().toString(),
                     "ttsState" to "focus_denied",
                 ),
             )
+            if (retry <= MAX_FOCUS_RETRIES) {
+                focusRetries[text] = retry
+                retryHandler.postDelayed({ speakNextIfNeeded() }, FOCUS_RETRY_DELAY_MS)
+            }
             return
         }
+        pending.removeFirst()
+        focusRetries.remove(text)
         speakNow(text)
     }
 
@@ -177,8 +196,18 @@ class YapeTextToSpeech(
             @Suppress("DEPRECATION")
             audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
         }
+        diagnosticsRepository?.update(mapOf("lastAudioFocusResult" to audioFocusResultName(result)))
+        if (BuildConfig.DEBUG) Log.d(TAG, "requestAudioFocus=${audioFocusResultName(result)}")
         return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
     }
+
+    private fun audioFocusResultName(result: Int): String =
+        when (result) {
+            AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> "granted"
+            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> "delayed"
+            AudioManager.AUDIOFOCUS_REQUEST_FAILED -> "failed"
+            else -> "unknown:$result"
+        }
 
     private fun abandonFocus() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -192,5 +221,7 @@ class YapeTextToSpeech(
     companion object {
         private const val TAG = "VoxNotify"
         private const val MAX_PENDING = 5
+        private const val MAX_FOCUS_RETRIES = 3
+        private const val FOCUS_RETRY_DELAY_MS = 750L
     }
 }
