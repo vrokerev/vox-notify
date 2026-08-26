@@ -1,11 +1,14 @@
 package com.victormeneses.yape_notifier.notifications
 
+import android.os.Handler
+import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import com.victormeneses.yape_notifier.BuildConfig
 import com.victormeneses.yape_notifier.nativebridge.AppLabelResolver
 import com.victormeneses.yape_notifier.nativebridge.NativeChannelHandler
+import com.victormeneses.yape_notifier.nativebridge.NotificationAccess
 import com.victormeneses.yape_notifier.speech.YapeTextToSpeech
 import com.victormeneses.yape_notifier.storage.AppSelectionRepository
 import com.victormeneses.yape_notifier.storage.ListenerDiagnosticsRepository
@@ -22,6 +25,39 @@ class YapeNotificationListenerService : NotificationListenerService() {
     private lateinit var deduplicator: NotificationDeduplicator
     private lateinit var speech: YapeTextToSpeech
     private lateinit var rebindScheduler: ListenerRebindScheduler
+    private val healthHandler = Handler(Looper.getMainLooper())
+    private var listenerConnected = false
+    private val healthCheck = object : Runnable {
+        override fun run() {
+            if (!listenerConnected) return
+            val now = System.currentTimeMillis()
+            runCatching { activeNotifications?.size ?: 0 }
+                .onSuccess { activeCount ->
+                    diagnosticsRepository.update(
+                        mapOf(
+                            "listenerConnected" to "true",
+                            "listenerHeartbeatAt" to now.toString(),
+                            "listenerHealthCheckAt" to now.toString(),
+                            "listenerHealthCheckResult" to "ok:active=$activeCount",
+                        ),
+                    )
+                }
+                .onFailure { error ->
+                    listenerConnected = false
+                    diagnosticsRepository.update(
+                        mapOf(
+                            "listenerConnected" to "false",
+                            "listenerHealthCheckAt" to now.toString(),
+                            "listenerHealthCheckResult" to "failed:${error.javaClass.simpleName}",
+                        ),
+                    )
+                    VoxNotifyEventBus.emit("listener_health_failed")
+                    rebindScheduler.schedule("listener_health_check_failed")
+                    return
+                }
+            healthHandler.postDelayed(this, LISTENER_HEALTH_INTERVAL_MS)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -56,16 +92,24 @@ class YapeNotificationListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        listenerConnected = true
         rebindScheduler.cancel()
+        val now = System.currentTimeMillis()
         diagnosticsRepository.update(
             mapOf(
                 "listenerConnected" to "true",
-                "listenerConnectedAt" to System.currentTimeMillis().toString(),
+                "listenerConnectedAt" to now.toString(),
+                "listenerHeartbeatAt" to now.toString(),
+                "listenerHealthCheckAt" to now.toString(),
+                "listenerHealthCheckResult" to "connected",
+                "listenerRecoveryState" to "healthy",
                 "ttsState" to "created",
                 "batteryOptimizationIgnored" to batteryOptimizationIgnored(),
                 "appStandbyBucket" to standbyBucket(),
             ),
         )
+        healthHandler.removeCallbacks(healthCheck)
+        healthHandler.post(healthCheck)
         registerActiveNotificationPackages()
         VoxNotifyEventBus.emit("listener_connected")
         if (BuildConfig.DEBUG) Log.d(TAG, "listener connected")
@@ -73,10 +117,13 @@ class YapeNotificationListenerService : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
+        listenerConnected = false
+        healthHandler.removeCallbacks(healthCheck)
         diagnosticsRepository.update(
             mapOf(
                 "listenerConnected" to "false",
                 "listenerDisconnectedAt" to System.currentTimeMillis().toString(),
+                "listenerHealthCheckResult" to "disconnected",
             ),
         )
         VoxNotifyEventBus.emit("listener_disconnected")
@@ -86,8 +133,13 @@ class YapeNotificationListenerService : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val callbackAt = System.currentTimeMillis()
+        listenerConnected = true
         diagnosticsRepository.update(
             mapOf(
+                "listenerConnected" to "true",
+                "listenerHeartbeatAt" to callbackAt.toString(),
+                "listenerHealthCheckAt" to callbackAt.toString(),
+                "listenerHealthCheckResult" to "callback",
                 "lastCallbackAt" to callbackAt.toString(),
                 "lastCallbackPackage" to sbn.packageName,
                 "lastCallbackNotificationId" to sbn.id.toString(),
@@ -231,12 +283,25 @@ class YapeNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onDestroy() {
+        listenerConnected = false
+        healthHandler.removeCallbacksAndMessages(null)
+        diagnosticsRepository.update(
+            mapOf(
+                "listenerConnected" to "false",
+                "listenerDestroyedAt" to System.currentTimeMillis().toString(),
+                "listenerHealthCheckResult" to "destroyed",
+            ),
+        )
         speech.shutdown()
+        if (NotificationAccess.isEnabled(applicationContext)) {
+            VoxNotifyEventBus.emit("listener_destroyed")
+        }
         super.onDestroy()
     }
 
     companion object {
         private const val TAG = "VoxNotify"
+        private const val LISTENER_HEALTH_INTERVAL_MS = 30_000L
     }
 
     private fun registerActiveNotificationPackages() {

@@ -19,6 +19,7 @@ import com.victormeneses.yape_notifier.MainActivity
 import com.victormeneses.yape_notifier.notifications.AllowedPackages
 import com.victormeneses.yape_notifier.notifications.AppReadMode
 import com.victormeneses.yape_notifier.notifications.AppSelection
+import com.victormeneses.yape_notifier.notifications.ListenerRebindScheduler
 import com.victormeneses.yape_notifier.notifications.NativeSettings
 import com.victormeneses.yape_notifier.notifications.NotificationDeduplicator
 import com.victormeneses.yape_notifier.notifications.NotificationPayload
@@ -45,7 +46,7 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
     private val historyRepository = PaymentHistoryRepository(store)
     private val appSelectionRepository = AppSelectionRepository(store)
     private val diagnosticsRepository = ListenerDiagnosticsRepository(store)
-    private val speech by lazy { YapeTextToSpeech(context.applicationContext) }
+    private val speech by lazy { YapeTextToSpeech(context.applicationContext, diagnosticsRepository) }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -115,10 +116,16 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
                 result.success(null)
             }
             "requestListenerRebind" -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    NotificationListenerService.requestRebind(ComponentName(context, YapeNotificationListenerService::class.java))
+                val diagnostics = diagnosticsRepository.get()
+                val now = System.currentTimeMillis()
+                val healthy = isListenerHealthy(diagnostics, now)
+                if (!healthy && NotificationAccess.isEnabled(context.applicationContext)) {
+                    ListenerRebindScheduler(context.applicationContext, diagnosticsRepository).recover(
+                        reason = "app_resume_or_manual",
+                        forceCycle = diagnostics["listenerConnected"] == "true",
+                    )
                 }
-                result.success(null)
+                result.success(mapOf("healthy" to healthy, "recoveryRequested" to !healthy))
             }
             "startContinuousBackground" -> {
                 val current = settingsRepository.get()
@@ -184,22 +191,34 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
     private fun listenerDiagnostics(): Map<String, String> {
         val diagnostics = diagnosticsRepository.get().toMutableMap()
         val now = System.currentTimeMillis()
-        val listenerConnectedAt = diagnostics["listenerConnectedAt"].orEmpty().toLongOrNull() ?: 0L
         val lastCallbackAt = diagnostics["lastCallbackAt"].orEmpty().toLongOrNull() ?: 0L
+        val listenerHeartbeatAt = latestListenerHealthTimestamp(diagnostics)
         val foregroundHeartbeatAt = diagnostics["foregroundHeartbeatAt"].orEmpty().toLongOrNull() ?: 0L
         val foregroundLive = VoxNotifyForegroundService.isRunning() ||
             (foregroundHeartbeatAt > 0L && now - foregroundHeartbeatAt <= FOREGROUND_HEARTBEAT_STALE_MS)
-        val listenerLive = diagnostics["listenerConnected"] == "true" &&
-            listenerConnectedAt > 0L &&
-            now - listenerConnectedAt <= LISTENER_CONNECTION_STALE_MS
+        val listenerLive = isListenerHealthy(diagnostics, now)
         diagnostics["listenerLive"] = listenerLive.toString()
-        diagnostics["listenerFreshness"] = freshness(now, listenerConnectedAt, LISTENER_CONNECTION_STALE_MS)
+        diagnostics["listenerFreshness"] = freshness(now, listenerHeartbeatAt, LISTENER_HEARTBEAT_STALE_MS)
         diagnostics["lastCallbackFreshness"] = freshness(now, lastCallbackAt, LAST_CALLBACK_STALE_MS)
         diagnostics["foregroundSpeechServiceActuallyRunning"] = foregroundLive.toString()
         diagnostics["foregroundHeartbeatFreshness"] = freshness(now, foregroundHeartbeatAt, FOREGROUND_HEARTBEAT_STALE_MS)
         diagnostics["postNotificationsPermissionGranted"] = hasPostNotificationsPermission().toString()
         diagnostics["yapePackageLabel"] = AppLabelResolver.labelFor(context.applicationContext, AllowedPackages.YAPE_PACKAGE)
         return diagnostics
+    }
+
+    private fun latestListenerHealthTimestamp(diagnostics: Map<String, String>): Long =
+        listOf(
+            diagnostics["listenerHeartbeatAt"].orEmpty().toLongOrNull() ?: 0L,
+            diagnostics["listenerHealthCheckAt"].orEmpty().toLongOrNull() ?: 0L,
+            diagnostics["lastCallbackAt"].orEmpty().toLongOrNull() ?: 0L,
+        ).maxOrNull() ?: 0L
+
+    private fun isListenerHealthy(diagnostics: Map<String, String>, now: Long): Boolean {
+        val healthAt = latestListenerHealthTimestamp(diagnostics)
+        return diagnostics["listenerConnected"] == "true" &&
+            healthAt > 0L &&
+            now - healthAt <= LISTENER_HEARTBEAT_STALE_MS
     }
 
     private fun availableApps(): List<AppSelection> {
@@ -340,7 +359,7 @@ class NativeChannelHandler(private val context: Context) : MethodChannel.MethodC
         const val CHANNEL_NAME = "yape_notifier/native"
         const val EVENT_CHANNEL_NAME = "voxnotify/events"
         private const val POST_NOTIFICATIONS_REQUEST_CODE = 4202
-        private const val LISTENER_CONNECTION_STALE_MS = 10 * 60 * 1000L
+        private const val LISTENER_HEARTBEAT_STALE_MS = 75 * 1000L
         private const val LAST_CALLBACK_STALE_MS = 24 * 60 * 60 * 1000L
         private const val FOREGROUND_HEARTBEAT_STALE_MS = 45 * 1000L
         const val LISTENER_PROBE_CHANNEL_ID = "voxnotify_listener_probe"
