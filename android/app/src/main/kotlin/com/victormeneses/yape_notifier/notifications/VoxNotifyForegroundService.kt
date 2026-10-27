@@ -255,10 +255,10 @@ class VoxNotifyForegroundService : Service() {
         private const val LEGACY_CHANNEL_ID = "voxnotify_background"
         private const val NOTIFICATION_ID = 4201
         private const val ACTION_STOP = "com.victormeneses.yape_notifier.STOP_BACKGROUND"
-        private const val HEARTBEAT_INTERVAL_MS = 15_000L
-        private const val HEARTBEAT_STALE_MS = 45_000L
-        private const val LISTENER_HEARTBEAT_STALE_MS = 75_000L
-        private const val LISTENER_RECOVERY_COOLDOWN_MS = 60_000L
+        private const val HEARTBEAT_INTERVAL_MS = 10_000L
+        private const val HEARTBEAT_STALE_MS = 30_000L
+        private const val LISTENER_HEARTBEAT_STALE_MS = 45_000L
+        private const val LISTENER_RECOVERY_COOLDOWN_MS = 30_000L
         @Volatile private var running = false
         @Volatile private var lastHeartbeatAt = 0L
         @Volatile private var activeInstance: VoxNotifyForegroundService? = null

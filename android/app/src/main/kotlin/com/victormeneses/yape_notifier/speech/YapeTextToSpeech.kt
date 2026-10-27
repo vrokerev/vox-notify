@@ -2,7 +2,9 @@ package com.victormeneses.yape_notifier.speech
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -28,13 +30,26 @@ class YapeTextToSpeech(
     private var initRetryScheduled = false
     private val retryHandler = Handler(Looper.getMainLooper())
 
-    // VoxNotify announces an incoming notification. Treat the spoken phrase as notification
-    // audio instead of media playback. This deliberately avoids requestAudioFocus(), which
-    // Android 15/HyperOS can deny to a background process even while our monitoring FGS is alive.
+    // VoxNotify announces an incoming notification. We set USAGE_NOTIFICATION and CONTENT_TYPE_SPEECH
+    // to align with system notification routing while requesting transient audio focus with ducking.
+    // If granted, third-party media playback (e.g. Facebook videos, reels, music) ducks its volume
+    // so the announcement is clear. If denied by aggressive OEM background checks, playback proceeds anyway.
     private val audioAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_NOTIFICATION)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
         .build()
+
+    private val focusRequest: AudioFocusRequest? by lazy {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(audioAttributes)
+                .setAcceptsDelayedFocusGain(false)
+                .setOnAudioFocusChangeListener { }
+                .build()
+        } else {
+            null
+        }
+    }
 
     private val utteranceListener =
         object : UtteranceProgressListener() {
@@ -44,7 +59,6 @@ class YapeTextToSpeech(
                     mapOf(
                         "lastTtsStartedAt" to System.currentTimeMillis().toString(),
                         "ttsState" to "started",
-                        "lastAudioFocusResult" to "not_requested_notification_audio",
                     ),
                 )
                 if (BuildConfig.DEBUG) Log.d(TAG, "tts start=$utteranceId usage=notification")
@@ -52,6 +66,7 @@ class YapeTextToSpeech(
 
             override fun onDone(utteranceId: String?) {
                 speaking = false
+                abandonTransientFocus()
                 diagnosticsRepository?.update(
                     mapOf(
                         "lastTtsCompletedAt" to System.currentTimeMillis().toString(),
@@ -160,6 +175,7 @@ class YapeTextToSpeech(
         retryHandler.removeCallbacksAndMessages(null)
         initRetryScheduled = false
         speaking = false
+        abandonTransientFocus()
         runCatching { tts?.stop() }
     }
 
@@ -265,13 +281,16 @@ class YapeTextToSpeech(
         }.getOrDefault(-1)
         val utteranceId = "voxnotify-${System.nanoTime()}"
 
+        val focusGranted = requestTransientFocus()
+        val focusResultStr = if (focusGranted) "granted_transient_may_duck" else "denied_or_failed"
+
         diagnosticsRepository?.update(
             mapOf(
                 "ttsState" to "speak_called",
                 "lastTtsSpeakCalledAt" to System.currentTimeMillis().toString(),
                 "ttsAudioUsage" to "notification",
-                "ttsFocusGain" to "not_requested",
-                "lastAudioFocusResult" to "not_requested_notification_audio",
+                "ttsFocusGain" to "transient_may_duck",
+                "lastAudioFocusResult" to focusResultStr,
                 "ttsNotificationVolume" to "$streamVolume/$streamMax",
                 "ttsUtteranceId" to utteranceId,
             ),
@@ -279,7 +298,7 @@ class YapeTextToSpeech(
         if (BuildConfig.DEBUG) {
             Log.d(
                 TAG,
-                "tts speak call=$utteranceId usage=notification focus=not_requested volume=$streamVolume/$streamMax",
+                "tts speak call=$utteranceId usage=notification focus=$focusResultStr volume=$streamVolume/$streamMax",
             )
         }
 
@@ -288,6 +307,7 @@ class YapeTextToSpeech(
         }
         val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
         if (result == TextToSpeech.ERROR) {
+            abandonTransientFocus()
             pending.addFirst(text)
             failed = true
             speaking = false
@@ -310,6 +330,7 @@ class YapeTextToSpeech(
 
     private fun handleUtteranceError(utteranceId: String?, code: String) {
         speaking = false
+        abandonTransientFocus()
         diagnosticsRepository?.update(
             mapOf(
                 "lastTtsError" to "$code:$utteranceId",
@@ -318,6 +339,32 @@ class YapeTextToSpeech(
         )
         if (BuildConfig.DEBUG) Log.d(TAG, "tts error=$utteranceId code=$code")
         speakNextIfNeeded()
+    }
+
+    private fun requestTransientFocus(): Boolean {
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                focusRequest?.let { audioManager.requestAudioFocus(it) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED } ?: false
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_NOTIFICATION,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK,
+                ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun abandonTransientFocus() {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.abandonAudioFocus(null)
+            }
+        }
     }
 
     companion object {
