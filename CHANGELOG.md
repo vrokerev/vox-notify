@@ -1,5 +1,5 @@
-## v1.0.4+14
-- Corrige volumen inaudible al usar aplicaciones multimedia como Facebook, Instagram o YouTube: solicita foco de audio transitorio con atenuación (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`), bajando temporalmente el volumen de los videos mientras anuncia la notificación y restableciéndolo al terminar.
+## v1.0.5+15
+- Corrige volumen inaudible al usar aplicaciones multimedia como Facebook, Instagram o YouTube: solicita foco de audio transitorio con atenuación (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`), bajando automáticamente el volumen de los videos mientras anuncia la notificación y restableciéndolo al terminar.
 - Corrige la desconexión del NotificationListenerService al cargar o tras periodos prolongados de inactividad: reduce intervalos del watchdog a 45s/30s y registra receptores de conexión/desconexión de cargador (`ACTION_POWER_CONNECTED` / `ACTION_POWER_DISCONNECTED`) para reconectar automáticamente sin intervención manual.
 
 ## v1.0.3+13
